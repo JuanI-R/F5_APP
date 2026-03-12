@@ -172,13 +172,13 @@ class MatchOut(BaseModel):
     id: int; team_a: List[int]; team_b: List[int]
     scheduled_at: datetime | None; is_recorded: bool
     winner_team: Literal["A","B","D",None] = None
-    goal_diff: int | None; score_a: int; score_b: int
+    goal_diff: int | None
     played_at: datetime | None
     rank_winners: List[int] | None; rank_losers: List[int] | None
     trends_snapshot: Dict[int,Dict[str,Any]] | None = None
 
 class MatchResultIn(BaseModel):
-    score_a: int; score_b: int; winner_team: Literal["A","B","D"]
+    goal_diff: int = Field(..., ge=0); winner_team: Literal["A","B","D"]
     rank_winners: List[int] = Field(default_factory=list)
     rank_losers: List[int] = Field(default_factory=list)
 
@@ -190,7 +190,7 @@ class TeamGenResponse(BaseModel):
     score_diff: float; syn_sum: float; skill_sum_a: float; skill_sum_b: float
 
 class PlayerTrendOut(BaseModel):
-    player_id: int; trend: Literal["up","down","flat"]; score: int
+    player_id: int; trend: Literal["up2","up1","flat","down1","down2"]; score: int
 
 # ---- APP ----
 app = FastAPI(title="Futbol5 API", version="2.0.0")
@@ -234,7 +234,23 @@ def _perf_score(pid, m):
 def _in_match(pid, m):
     return pid in (csv_split(m.team_a) or []) + (csv_split(m.team_b) or [])
 
-def _trend(total): return "up" if total>=3 else ("down" if total<=-2 else "flat")
+def _trend(total):
+    if total >= 6: return "up2"
+    if total >= 3: return "up1"
+    if total >= 0: return "flat"
+    if total >= -2: return "down1"
+    return "down2"
+
+STREAK_FACTORS = {"up2": 0.95, "up1": 0.70, "flat": 0.50, "down1": 0.30, "down2": 0.05}
+
+def compute_overall_with_trend(p: Player, trend: str) -> float:
+    factor = STREAK_FACTORS.get(trend, 0.50)
+    w = GK_WEIGHTS if p.is_goalkeeper else FIELD_WEIGHTS
+    total = 0.0
+    for attr in ["shot", "passing", "defense", "vision", "stamina", "speed"]:
+        val = getattr(p, f"{attr}_min") + factor * (getattr(p, f"{attr}_max") - getattr(p, f"{attr}_min"))
+        total += val * w[attr]
+    return total
 
 def trends_snapshot(db, pids, lookback=3):
     matches = db.query(Match).filter(Match.is_recorded==True).order_by(Match.played_at.desc()).all()
@@ -261,12 +277,12 @@ def to_match_out(m):
     trends = None
     if m.trends_snapshot:
         try: trends = {int(k):v for k,v in json.loads(m.trends_snapshot).items()}
-        except: pass
+        except Exception: pass
     return MatchOut(
         id=m.id, team_a=csv_split(m.team_a) or [], team_b=csv_split(m.team_b) or [],
         scheduled_at=m.scheduled_at, is_recorded=bool(m.is_recorded),
         winner_team=m.winner_team if m.winner_team in ("A","B","D") else None,
-        goal_diff=m.goal_diff, score_a=m.score_a, score_b=m.score_b, played_at=m.played_at,
+        goal_diff=m.goal_diff, played_at=m.played_at,
         rank_winners=csv_split(m.rank_winners), rank_losers=csv_split(m.rank_losers),
         trends_snapshot=trends,
     )
@@ -372,7 +388,15 @@ def generate_teams(req: TeamGenRequest, db=Depends(get_session)):
     if len(ids) != 10: raise HTTPException(400, "Debes enviar exactamente 10 jugadores")
     players = db.query(Player).filter(Player.id.in_(ids)).all()
     if len(players) != 10: raise HTTPException(400, "IDs inválidos")
-    ovrs = {p.id: compute_overall(p) for p in players}
+    recorded_matches = db.query(Match).filter(Match.is_recorded==True).order_by(Match.played_at.desc()).all()
+    def get_player_trend(pid):
+        total, count = 0, 0
+        for m in recorded_matches:
+            if _in_match(pid, m):
+                total += _perf_score(pid, m); count += 1
+                if count >= 3: break
+        return _trend(total)
+    ovrs = {p.id: compute_overall_with_trend(p, get_player_trend(p.id)) for p in players}
     gk_ids = {p.id for p in players if p.is_goalkeeper}
     best, best_c = None, None
     for comb in itertools.combinations(ids, 5):
@@ -413,8 +437,7 @@ def record_result(mid: int, data: MatchResultIn, db=Depends(get_session)):
     m = db.query(Match).get(mid)
     if not m: raise HTTPException(404, "Partido no encontrado")
     if m.is_recorded: raise HTTPException(400, "Resultado ya cargado")
-    m.score_a=int(data.score_a); m.score_b=int(data.score_b)
-    m.winner_team=data.winner_team; m.goal_diff=abs(m.score_a-m.score_b)
+    m.winner_team=data.winner_team; m.goal_diff=data.goal_diff
     m.rank_winners=csv_join(data.rank_winners) if data.rank_winners else None
     m.rank_losers=csv_join(data.rank_losers) if data.rank_losers else None
     m.is_recorded=True; m.played_at=datetime.utcnow()
