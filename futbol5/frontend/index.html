@@ -129,15 +129,37 @@
   .field-row { display: flex; gap: 10px; }
   .field-row .field { flex: 1; }
 
-  /* RANGE SLIDER */
+  /* RANGE SLIDER — single (regularidad) */
   .range-wrap { display: flex; align-items: center; gap: 10px; }
-  .range-val { background: var(--bg3); padding: 3px 10px; border-radius: 6px; font-size: 0.85rem; font-weight: 600; min-width: 54px; text-align: center; color: var(--green); }
   input[type=range] {
     -webkit-appearance: none; flex: 1; height: 4px;
     background: var(--bg3); border-radius: 4px; border: none; padding: 0;
   }
   input[type=range]::-webkit-slider-thumb {
     -webkit-appearance: none; width: 16px; height: 16px; background: var(--green);
+    border-radius: 50%; cursor: pointer; box-shadow: 0 0 8px rgba(34,197,94,0.5);
+  }
+  /* RANGE SLIDER — doble (atributos min–max) */
+  .range-double { position: relative; height: 28px; }
+  .range-double .rd-track {
+    position: absolute; width: 100%; height: 4px;
+    top: 50%; transform: translateY(-50%);
+    background: var(--bg3); border-radius: 4px;
+  }
+  .range-double .rd-fill {
+    position: absolute; height: 4px;
+    background: var(--green); border-radius: 4px;
+    top: 0;
+  }
+  .range-double input[type=range] {
+    position: absolute; width: 100%; height: 4px;
+    top: 50%; transform: translateY(-50%);
+    background: transparent !important; pointer-events: none;
+    -webkit-appearance: none; border: none; padding: 0; flex: none;
+  }
+  .range-double input[type=range]::-webkit-slider-thumb {
+    pointer-events: all; -webkit-appearance: none;
+    width: 18px; height: 18px; background: var(--green);
     border-radius: 50%; cursor: pointer; box-shadow: 0 0 8px rgba(34,197,94,0.5);
   }
 
@@ -303,9 +325,11 @@
   .score-big-input:focus { border-color: var(--green); }
 
   /* TREND ARROWS */
-  .trend-up   { color: var(--green); font-size: 0.7rem; }
-  .trend-down { color: var(--red); font-size: 0.7rem; }
+  .trend-up2  { color: var(--green); font-size: 0.7rem; font-weight: 800; }
+  .trend-up1  { color: var(--green); font-size: 0.7rem; }
   .trend-flat { color: var(--muted); font-size: 0.7rem; }
+  .trend-down1{ color: var(--red); font-size: 0.7rem; }
+  .trend-down2{ color: var(--red); font-size: 0.7rem; font-weight: 800; }
 
   /* SCROLL */
   ::-webkit-scrollbar { width: 6px; }
@@ -424,14 +448,45 @@ function h(tag, attrs = {}, ...children) {
   return el;
 }
 
+// Slider doble: retorna { el, getMin, getMax }
+// lblEl: elemento <span> donde mostrar "X–Y" (se actualiza automáticamente)
+function mkRangeDouble(minVal, maxVal, lblEl, onChange) {
+  const MIN = 1, MAX = 10;
+  const pct = v => (v - MIN) / (MAX - MIN) * 100;
+  const wrap = h('div', { class:'range-double' });
+  const track = h('div', { class:'rd-track' });
+  const fill = h('div', { class:'rd-fill' });
+  track.appendChild(fill);
+  wrap.appendChild(track);
+  const mnInp = h('input', { type:'range', min:MIN, max:MAX, step:0.5, value:minVal });
+  const mxInp = h('input', { type:'range', min:MIN, max:MAX, step:0.5, value:maxVal });
+  const update = (e) => {
+    let mnv = parseFloat(mnInp.value), mxv = parseFloat(mxInp.value);
+    if (mnv > mxv) {
+      if (!e || e.target === mnInp) { mxInp.value = mnv; mxv = mnv; }
+      else { mnInp.value = mxv; mnv = mxv; }
+    }
+    fill.style.left = pct(mnv) + '%';
+    fill.style.width = (pct(mxv) - pct(mnv)) + '%';
+    if (lblEl) lblEl.textContent = `${mnv}–${mxv}`;
+    onChange?.(mnv, mxv);
+  };
+  mnInp.oninput = update; mxInp.oninput = update;
+  wrap.appendChild(mnInp); wrap.appendChild(mxInp);
+  update();
+  return wrap;
+}
+
 function ovr(p) { return p.overall_expected?.toFixed(1) || '—'; }
+
+const TREND_LABEL = { up2:'▲▲ En racha', up1:'▲ Bien', flat:'— Regular', down1:'▼ Bajo', down2:'▼▼ Mal momento' };
+const TREND_CLS   = { up2:'badge-up', up1:'badge-up', flat:'badge-flat', down1:'badge-down', down2:'badge-down' };
+const TREND_ICON  = { up2:'▲▲', up1:'▲', flat:'—', down1:'▼', down2:'▼▼' };
 
 function trendBadge(pid) {
   const t = state.trends[pid];
   if (!t) return '';
-  const map = { up: '▲ Alza', down: '▼ Baja', flat: '— Parejo' };
-  const cls = { up: 'badge-up', down: 'badge-down', flat: 'badge-flat' };
-  return `<span class="badge ${cls[t.trend]}">${map[t.trend]}</span>`;
+  return `<span class="badge ${TREND_CLS[t.trend]}">${TREND_LABEL[t.trend]}</span>`;
 }
 
 function playerLabel(p) {
@@ -495,7 +550,7 @@ function renderContent() {
   const el = document.getElementById('content');
   el.innerHTML = '';
   renderHeader();
-  if (state.tab === 'jugar') renderJugar(el);
+  if (state.tab === 'jugar') renderJugar(el);        // async, fire-and-forget ok
   else if (state.tab === 'historial') renderHistorial(el);
   else if (state.tab === 'stats') renderStats(el);
   else if (state.tab === 'admin') renderAdmin(el);
@@ -504,7 +559,7 @@ function renderContent() {
 // =========================================================
 //  TAB: JUGAR
 // =========================================================
-function renderJugar(root) {
+async function renderJugar(root) {
   if (!state.me) {
     renderLogin(root);
     return;
@@ -517,7 +572,7 @@ function renderJugar(root) {
   grid.appendChild(right);
   root.appendChild(grid);
 
-  renderSelfOpinion(left);
+  await renderSelfOpinion(left);
   renderSynergy(left);
   renderOthersOpinion(left);
   renderPendingMatches(right);
@@ -570,7 +625,7 @@ function logout() {
 }
 
 // ---- SELF OPINION ----
-function renderSelfOpinion(root) {
+async function renderSelfOpinion(root) {
   const myPlayer = state.players.find(p => p.id === state.me?.player_id);
   if (!myPlayer) return;
 
@@ -580,44 +635,35 @@ function renderSelfOpinion(root) {
   attrs.forEach(a => { vals[a] = [myPlayer[`${a}_min`]||4, myPlayer[`${a}_max`]||6]; });
   let isGk = myPlayer.is_goalkeeper;
 
-  const card = h('div', { class: 'card' });
-  const title = h('div', { class: 'card-title' }, '👤 Mi autoevaluación');
-  card.appendChild(title);
+  // Pre-cargar opinión guardada del usuario sobre sí mismo
+  try {
+    const ops = await api(`/opinions?actor_user_id=${state.me.id}&target_player_id=${myPlayer.id}`);
+    if (ops.length) {
+      const op = ops[0];
+      attrs.forEach(a => { vals[a] = [op[`${a}_min`], op[`${a}_max`]]; });
+      if (op.is_goalkeeper_self !== null && op.is_goalkeeper_self !== undefined) isGk = op.is_goalkeeper_self;
+    }
+  } catch(e) {}
 
-  // GK checkbox
-  const gkRow = h('label', { class: 'check-row', style:'margin-bottom:12px' },
-    (() => { const c = h('input', { type:'checkbox' }); c.checked = isGk; c.onchange = e => { isGk = e.target.checked; }; return c; })(),
-    'Soy arquero'
-  );
-  card.appendChild(gkRow);
+  const card = h('div', { class: 'card' });
+  card.appendChild(h('div', { class: 'card-title' }, '👤 Mi autoevaluación'));
+
+  const gkCb = h('input', { type:'checkbox' }); gkCb.checked = isGk; gkCb.onchange = e => { isGk = e.target.checked; };
+  card.appendChild(h('label', { class:'check-row', style:'margin-bottom:12px' }, gkCb, 'Soy arquero'));
 
   const attrWrap = h('div', {});
   attrs.forEach(a => {
     const row = h('div', { style:'margin-bottom:10px' });
-    const lbl = h('div', { style:'display:flex;justify-content:space-between;font-size:.8rem;color:var(--muted2);margin-bottom:4px' },
-      h('span', {}, labels[a]),
-      (() => { const s = h('span', { style:'color:var(--green);font-weight:700' }, `${vals[a][0]}–${vals[a][1]}`);
-        return s; })()
-    );
-    row.appendChild(lbl);
-
-    const wrap = h('div', { class: 'range-wrap', style:'gap:6px' });
-    const mn = h('input', { type:'range', min:1, max:10, step:0.5, value: vals[a][0] });
-    const mx = h('input', { type:'range', min:1, max:10, step:0.5, value: vals[a][1] });
-    const upd = () => {
-      let mnv = parseFloat(mn.value), mxv = parseFloat(mx.value);
-      if (mnv > mxv) mxv = mnv;
-      vals[a] = [mnv, mxv];
-      lbl.querySelector('span:last-child').textContent = `${mnv}–${mxv}`;
-    };
-    mn.oninput = upd; mx.oninput = upd;
-    wrap.appendChild(mn); wrap.appendChild(mx);
-    row.appendChild(wrap);
+    const valLbl = h('span', { style:'color:var(--green);font-weight:700' }, `${vals[a][0]}–${vals[a][1]}`);
+    row.appendChild(h('div', { style:'display:flex;justify-content:space-between;font-size:.8rem;color:var(--muted2);margin-bottom:4px' },
+      h('span', {}, labels[a]), valLbl
+    ));
+    row.appendChild(mkRangeDouble(vals[a][0], vals[a][1], valLbl, (mn, mx) => { vals[a] = [mn, mx]; }));
     attrWrap.appendChild(row);
   });
   card.appendChild(attrWrap);
 
-  const saveBtn = h('button', { class:'btn btn-green', style:'margin-top:8px', onClick: async () => {
+  card.appendChild(h('button', { class:'btn btn-green', style:'margin-top:8px', onClick: async () => {
     try {
       await api('/opinions', { method:'POST', body: JSON.stringify({
         actor_user_id: state.me.id,
@@ -628,8 +674,7 @@ function renderSelfOpinion(root) {
       await loadAll();
       toast('Autoevaluación guardada ✓');
     } catch(e) { toast('Error al guardar: ' + e.message, 'err'); }
-  }}, 'Guardar autoevaluación');
-  card.appendChild(saveBtn);
+  }}, 'Guardar autoevaluación'));
   root.appendChild(card);
 }
 
@@ -664,7 +709,9 @@ function renderSynergy(root) {
       const sel = h('div', { class:'syn-sel' });
       [-2,-1,0,1,2].forEach(v => {
         const icons = { 2:'💚', 1:'👍', 0:'–', '-1':'👎', '-2':'💔' };
-        const btn = h('button', { class:`syn-btn${prefs[o.id]===v || (v===0 && prefs[o.id]===undefined) ? ' active-'+(v>0?'p':'')+(Math.abs(v)) : ''}`,
+        const isActive = prefs[o.id]===v || (v===0 && prefs[o.id]===undefined);
+        const activeClass = isActive ? (v>0 ? ` active-p${v}` : v<0 ? ` active-m${Math.abs(v)}` : ' active-0') : '';
+        const btn = h('button', { class:`syn-btn${activeClass}`,
           title: synLabels[v], onClick: () => {
           prefs[o.id] = v;
           renderRows();
@@ -705,32 +752,35 @@ function renderOthersOpinion(root) {
   const formWrap = h('div', {});
   card.appendChild(formWrap);
 
-  sel.onchange = () => {
-    formWrap.innerHTML = '';
+  sel.onchange = async () => {
+    formWrap.innerHTML = '<div class="spinner" style="display:block;margin:12px auto"></div>';
     const pid = Number(sel.value);
-    if (!pid) return;
+    if (!pid) { formWrap.innerHTML = ''; return; }
     const p = others.find(x => x.id === pid);
     const vals = Object.fromEntries(attrs.map(a => [a, [p[`${a}_min`]||4, p[`${a}_max`]||6]]));
 
+    // Pre-cargar opinión guardada del usuario sobre este jugador
+    try {
+      const ops = await api(`/opinions?actor_user_id=${state.me.id}&target_player_id=${pid}`);
+      if (ops.length) {
+        const op = ops[0];
+        attrs.forEach(a => { vals[a] = [op[`${a}_min`], op[`${a}_max`]]; });
+      }
+    } catch(e) {}
+
+    formWrap.innerHTML = '';
     attrs.forEach(a => {
-      const lbl = h('div', { style:'display:flex;justify-content:space-between;font-size:.8rem;color:var(--muted2);margin-bottom:3px' },
-        h('span',{},labels[a]),
-        (() => { const s = h('span',{style:'color:var(--green);font-weight:700'},`${vals[a][0]}–${vals[a][1]}`); return s; })()
+      const valLbl = h('span',{style:'color:var(--green);font-weight:700'},`${vals[a][0]}–${vals[a][1]}`);
+      const lbl = h('div',{style:'display:flex;justify-content:space-between;font-size:.8rem;color:var(--muted2);margin-bottom:3px'},
+        h('span',{},labels[a]), valLbl
       );
-      const mn = h('input',{type:'range',min:1,max:10,step:0.5,value:vals[a][0]});
-      const mx = h('input',{type:'range',min:1,max:10,step:0.5,value:vals[a][1]});
-      const upd = () => {
-        let mnv=parseFloat(mn.value),mxv=parseFloat(mx.value);
-        if(mnv>mxv)mxv=mnv;
-        vals[a]=[mnv,mxv];
-        lbl.querySelector('span:last-child').textContent=`${mnv}–${mxv}`;
-      };
-      mn.oninput=upd; mx.oninput=upd;
-      const wrap=h('div',{style:'margin-bottom:10px'},lbl,h('div',{class:'range-wrap'},mn,mx));
+      const wrap = h('div',{style:'margin-bottom:10px'}, lbl,
+        mkRangeDouble(vals[a][0], vals[a][1], valLbl, (mn, mx) => { vals[a]=[mn,mx]; })
+      );
       formWrap.appendChild(wrap);
     });
 
-    const saveBtn = h('button', { class:'btn btn-green btn-sm', style:'margin-top:4px', onClick: async () => {
+    formWrap.appendChild(h('button', { class:'btn btn-green btn-sm', style:'margin-top:4px', onClick: async () => {
       try {
         await api('/opinions', { method:'POST', body: JSON.stringify({
           actor_user_id: state.me.id, target_player_id: pid,
@@ -738,8 +788,7 @@ function renderOthersOpinion(root) {
         })});
         toast(`Opinión sobre ${p.name} guardada ✓`);
       } catch(e) { toast('Error: '+e.message,'err'); }
-    }}, 'Guardar opinión');
-    formWrap.appendChild(saveBtn);
+    }}, 'Guardar opinión'));
   };
 
   root.appendChild(card);
@@ -777,8 +826,8 @@ function renderPendingMatches(root) {
             const row = h('div', { class:'team-player' }, h('span',{},playerLabel(p)));
             const t = state.trends[id];
             if (t && t.trend !== 'flat') {
-              const icon = t.trend==='up'?'▲':'▼';
-              const col2 = t.trend==='up'?'var(--green)':'var(--red)';
+              const icon = TREND_ICON[t.trend];
+              const col2 = t.trend.startsWith('up')?'var(--green)':'var(--red)';
               row.appendChild(h('span',{style:`color:${col2};font-size:.7rem;margin-left:auto`},icon));
             }
             list.appendChild(row);
@@ -813,12 +862,9 @@ function openResultModal(match, onDone) {
     h('button',{class:'close-btn',onClick:()=>overlay.remove()},'×')
   ));
 
-  // Score inputs
-  let scoreA = 0, scoreB = 0, winner = 'A';
-  const inA = h('input',{type:'number',min:0,max:99,class:'score-big-input',value:0});
-  const inB = h('input',{type:'number',min:0,max:99,class:'score-big-input',value:0});
-  inA.oninput = () => { scoreA=parseInt(inA.value)||0; autoWinner(); };
-  inB.oninput = () => { scoreB=parseInt(inB.value)||0; autoWinner(); };
+  // Result inputs
+  let winner = 'A';
+  const inDiff = h('input',{type:'number',min:0,max:99,class:'score-big-input',value:0,style:'width:80px;text-align:center'});
 
   const winnerSel = h('select', {style:'margin-top:12px'},
     h('option',{value:'A'},'Ganó Equipo A'),
@@ -827,22 +873,16 @@ function openResultModal(match, onDone) {
   );
   winnerSel.onchange = () => { winner = winnerSel.value; renderRankWrap(); };
 
-  const autoWinner = () => {
-    if (scoreA > scoreB) { winner='A'; winnerSel.value='A'; }
-    else if (scoreB > scoreA) { winner='B'; winnerSel.value='B'; }
-    else { winner='D'; winnerSel.value='D'; }
-    renderRankWrap();
-  };
-
   modal.appendChild(h('div', { class:'field' },
-    h('label',{style:'text-align:center;display:block;margin-bottom:8px'},'Marcador'),
-    h('div', { class:'score-input-row' },
-      h('div',{style:'text-align:center'},h('div',{style:'font-size:.75rem;color:var(--muted);margin-bottom:4px'},'Equipo A'),inA),
-      h('div',{style:'font-family:"Barlow Condensed",sans-serif;font-size:1.5rem;font-weight:900;color:var(--muted)'},':'),
-      h('div',{style:'text-align:center'},h('div',{style:'font-size:.75rem;color:var(--muted);margin-bottom:4px'},'Equipo B'),inB)
+    h('label',{style:'text-align:center;display:block;margin-bottom:8px'},'Resultado'),
+    h('div',{style:'display:flex;flex-direction:column;align-items:center;gap:8px'},
+      h('div',{style:'display:flex;align-items:center;gap:10px'},
+        h('span',{style:'font-size:.85rem;color:var(--muted)'},'Diferencia de goles:'),
+        inDiff
+      ),
+      winnerSel
     )
   ));
-  modal.appendChild(h('div',{class:'field'},winnerSel));
 
   // Rankings
   const rankWinnersIds = [];
@@ -887,7 +927,7 @@ function openResultModal(match, onDone) {
       .filter(([,v])=>v).sort((a,b)=>a[1]-b[1]).map(([k])=>parseInt(k));
     try {
       await api(`/matches/${match.id}/result`, { method:'PUT', body: JSON.stringify({
-        score_a: parseInt(inA.value)||0, score_b: parseInt(inB.value)||0,
+        goal_diff: parseInt(inDiff.value)||0,
         winner_team: winner,
         rank_winners: rankW, rank_losers: rankL,
       })});
@@ -926,9 +966,7 @@ function renderTeamGenerator(root) {
       if (p.is_goalkeeper) left2.appendChild(h('span', { class:'badge badge-gk' }, 'GK'));
       const t = state.trends[p.id];
       if (t) {
-        const tc = { up:'badge-up', down:'badge-down', flat:'badge-flat' };
-        const tl = { up:'▲', down:'▼', flat:'—' };
-        left2.appendChild(h('span', { class:`badge ${tc[t.trend]}` }, tl[t.trend]));
+        left2.appendChild(h('span', { class:`badge ${TREND_CLS[t.trend]}` }, TREND_ICON[t.trend]));
       }
       chip.appendChild(left2);
       chip.appendChild(h('span', { class:'player-ovr' }, ovr(p)));
@@ -940,10 +978,6 @@ function renderTeamGenerator(root) {
   }
 
   const counter = h('div', { style:'font-size:.82rem;color:var(--muted);margin-bottom:8px' }, '0/10 seleccionados');
-  card.appendChild(counter);
-  card.appendChild(listWrap);
-  renderList();
-
   const genBtn = h('button', { class:'btn btn-green', disabled: true, onClick: async () => {
     genBtn.disabled = true;
     genBtn.innerHTML = '<span class="spinner"></span> Generando...';
@@ -954,6 +988,10 @@ function renderTeamGenerator(root) {
     genBtn.disabled = selected.size !== 10;
     genBtn.textContent = 'Generar equipos';
   }}, 'Generar equipos');
+
+  card.appendChild(counter);
+  card.appendChild(listWrap);
+  renderList();
   card.appendChild(genBtn);
   card.appendChild(resultWrap);
 
@@ -975,7 +1013,8 @@ function renderTeamGenerator(root) {
         row.appendChild(h('span', {}, playerLabel(p)));
         const t = state.trends[id];
         if (t && t.trend !== 'flat') {
-          row.appendChild(h('span',{style:`color:${t.trend==='up'?'var(--green)':'var(--red)'};font-size:.7rem;margin-left:auto`},t.trend==='up'?'▲':'▼'));
+          const col = t.trend.startsWith('up') ? 'var(--green)' : 'var(--red)';
+          row.appendChild(h('span',{style:`color:${col};font-size:.7rem;margin-left:auto`}, TREND_ICON[t.trend]));
         }
         list.appendChild(row);
       });
@@ -1046,8 +1085,9 @@ async function renderHistorial(root) {
 
           const scoreRow = h('div', { class:'match-score', style:'margin-bottom:12px' });
           const winA = m.winner_team==='A', winB=m.winner_team==='B', draw=m.winner_team==='D';
+          const diffLabel = draw ? 'Empate' : `+${m.goal_diff ?? 0}`;
           scoreRow.appendChild(h('span',{style:`font-size:1.1rem;font-weight:700;color:${winA?'#93c5fd':'var(--muted)'}; flex:1;text-align:right`},'Equipo A'));
-          scoreRow.appendChild(h('span',{style:`font-family:"Barlow Condensed",sans-serif;font-size:2.5rem;font-weight:900;color:${winA?'var(--blue)':winB?'var(--red)':'var(--yellow)'};padding:0 10px`},`${m.score_a}–${m.score_b}`));
+          scoreRow.appendChild(h('span',{style:`font-family:"Barlow Condensed",sans-serif;font-size:2.5rem;font-weight:900;color:${winA?'var(--blue)':winB?'var(--red)':'var(--yellow)'};padding:0 10px`}, diffLabel));
           scoreRow.appendChild(h('span',{style:`font-size:1.1rem;font-weight:700;color:${winB?'#fca5a5':'var(--muted)'}; flex:1;text-align:left`},'Equipo B'));
           mc.appendChild(scoreRow);
 
@@ -1104,96 +1144,261 @@ async function renderHistorial(root) {
 }
 
 // =========================================================
+//  PLAYER DETAIL MODAL
+// =========================================================
+async function openPlayerModal(player, trendsMap) {
+  const overlay = h('div', { class:'overlay', onClick: e => { if(e.target===overlay) overlay.remove(); } });
+  const modal = h('div', { class:'modal' });
+  modal.appendChild(h('div', { class:'modal-title' },
+    h('span',{},player.name + (player.is_goalkeeper?' 🥅':'')),
+    h('button',{class:'close-btn',onClick:()=>overlay.remove()},'×')
+  ));
+
+  const t = trendsMap[player.id];
+  if (t) modal.appendChild(h('div',{style:'margin-bottom:12px'},h('span',{class:`badge ${TREND_CLS[t.trend]}`},TREND_LABEL[t.trend])));
+
+  const spinner = h('div',{class:'spinner',style:'display:block;margin:20px auto'});
+  modal.appendChild(spinner);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  try {
+    const [history, chemistry] = await Promise.all([
+      api(`/players/${player.id}/history`),
+      api(`/players/${player.id}/chemistry`),
+    ]);
+
+    spinner.remove();
+
+    // Chemistry
+    if (chemistry.best_partner_name || chemistry.worst_rival_name) {
+      const chem = h('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px'});
+      if (chemistry.best_partner_name) {
+        chem.appendChild(h('div',{style:'background:rgba(34,197,94,.1);border:1px solid var(--green);border-radius:10px;padding:10px;text-align:center'},
+          h('div',{style:'font-size:.7rem;color:var(--muted);margin-bottom:4px'},'🤝 Mejor compañero'),
+          h('div',{style:'font-weight:700'},chemistry.best_partner_name),
+          h('div',{style:'color:var(--green);font-size:.85rem'},`${chemistry.best_partner_win_rate}% victorias juntos`)
+        ));
+      }
+      if (chemistry.worst_rival_name) {
+        chem.appendChild(h('div',{style:'background:rgba(239,68,68,.1);border:1px solid var(--red);border-radius:10px;padding:10px;text-align:center'},
+          h('div',{style:'font-size:.7rem;color:var(--muted);margin-bottom:4px'},'⚔️ Rival más duro'),
+          h('div',{style:'font-weight:700'},chemistry.worst_rival_name),
+          h('div',{style:'color:var(--red);font-size:.85rem'},`${chemistry.worst_rival_win_rate}% victorias contra él`)
+        ));
+      }
+      modal.appendChild(chem);
+    }
+
+    // History
+    modal.appendChild(h('div',{style:'font-size:.8rem;color:var(--muted2);font-weight:700;margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px'},'Historial de partidos'));
+    if (!history.length) {
+      modal.appendChild(h('div',{class:'empty'},h('p',{},'Sin partidos jugados aún')));
+    } else {
+      history.forEach(entry => {
+        const resColor = entry.result==='W' ? 'var(--green)' : entry.result==='L' ? 'var(--red)' : 'var(--yellow)';
+        const resLabel = entry.result==='W' ? 'Victoria' : entry.result==='L' ? 'Derrota' : 'Empate';
+        const date = new Date(entry.played_at).toLocaleDateString('es-AR',{weekday:'short',day:'numeric',month:'short',year:'numeric'});
+        const diffTxt = entry.goal_diff != null ? (entry.result==='D' ? 'Empate' : `+${entry.goal_diff}`) : '—';
+        const rankTxt = entry.rank_pos ? `#${entry.rank_pos}` : '—';
+        const row = h('div',{style:'display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--card-border)'},
+          h('div',{style:'display:flex;align-items:center;gap:10px'},
+            h('span',{style:`font-family:"Barlow Condensed",sans-serif;font-size:1rem;font-weight:900;color:${resColor};min-width:24px`},entry.result),
+            h('div',{},
+              h('div',{style:'font-size:.85rem'},date),
+              h('div',{style:'font-size:.75rem;color:var(--muted)'},resLabel+' · Dif: '+diffTxt+' · Rank: '+rankTxt)
+            )
+          ),
+          h('div',{style:`font-family:"Barlow Condensed",sans-serif;font-size:1.2rem;font-weight:700;color:${entry.perf_score>0?'var(--green)':entry.perf_score<0?'var(--red)':'var(--muted)'}`},
+            (entry.perf_score>0?'+':'')+entry.perf_score+' pts')
+        );
+        modal.appendChild(row);
+      });
+    }
+  } catch(e) {
+    spinner.remove();
+    modal.appendChild(h('div',{class:'empty'},h('p',{},'Error cargando datos')));
+  }
+}
+
+// =========================================================
 //  TAB: STATS
 // =========================================================
 async function renderStats(root) {
-  const card = h('div', { class:'card' });
-  card.appendChild(h('div', { class:'card-title' }, '📊 Estadísticas de jugadores'));
+  const attrs = ['shot','passing','defense','vision','stamina','speed'];
+  const attrLabels = { shot:'Disparo', passing:'Pase', defense:'Defensa', vision:'Visión', stamina:'Físico', speed:'Velocidad' };
 
-  const wrap = h('div', {});
-  card.appendChild(wrap);
+  // --- sub-tabs ---
+  let statsTab = 'ranking';
+  const tabBar = h('div',{style:'display:flex;gap:4px;margin-bottom:20px;background:var(--bg2);border:1px solid var(--card-border);padding:4px;border-radius:14px;width:fit-content'});
+  const mkTabBtn = (key, label) => {
+    const btn = h('button',{style:'font-family:"Barlow Condensed",sans-serif;font-size:1rem;font-weight:700;padding:6px 18px;border-radius:10px;border:none;cursor:pointer;transition:all .18s'},label);
+    const upd = () => { btn.style.background = statsTab===key ? 'var(--green)' : 'none'; btn.style.color = statsTab===key ? '#000' : 'var(--muted)'; };
+    btn.onclick = () => { statsTab = key; renderSection(); updateTabs(); };
+    tabBar.appendChild(btn);
+    return upd;
+  };
+  const updRanking = mkTabBtn('ranking','📊 Ranking');
+  const updTemporada = mkTabBtn('temporada','🏆 Temporada');
+  const updateTabs = () => { updRanking(); updTemporada(); };
+  updateTabs();
+  root.appendChild(tabBar);
 
-  try {
-    const [playersWithOp, trends, matches] = await Promise.all([
+  const content = h('div',{});
+  root.appendChild(content);
+
+  let playersWithOp = [], trendsMap = {};
+
+  async function renderSection() {
+    content.innerHTML = '<div class="spinner" style="display:block;margin:20px auto"></div>';
+    try {
+      if (statsTab === 'ranking') await renderRanking();
+      else await renderTemporada();
+    } catch(e) {
+      content.innerHTML = '';
+      content.appendChild(h('div',{class:'card'},h('div',{class:'empty'},h('p',{},'Error: '+e.message))));
+    }
+  }
+
+  // --- RANKING ---
+  async function renderRanking() {
+    const [pwop, trends] = await Promise.all([
       api('/players/with_opinions'),
       api('/players/trends?lookback=5'),
-      api('/matches?status=played'),
     ]);
-    const trendsMap = Object.fromEntries(trends.map(t => [t.player_id, t]));
-
-    // Win rates
-    const wins = {}, gamesPlayed = {};
-    matches.forEach(m => {
-      [...m.team_a, ...m.team_b].forEach(id => { gamesPlayed[id] = (gamesPlayed[id]||0)+1; });
-      if (m.winner_team === 'A') m.team_a.forEach(id => { wins[id]=(wins[id]||0)+1; });
-      else if (m.winner_team === 'B') m.team_b.forEach(id => { wins[id]=(wins[id]||0)+1; });
-    });
-
-    // Sort by overall
-    const sorted = [...playersWithOp].sort((a,b) => b.overall_combined - a.overall_combined);
-    const attrs = ['shot','passing','defense','vision','stamina','speed'];
-    const attrLabels = { shot:'Disparo', passing:'Pase', defense:'Defensa', vision:'Visión', stamina:'Físico', speed:'Velocidad' };
-
+    playersWithOp = pwop;
+    trendsMap = Object.fromEntries(trends.map(t => [t.player_id, t]));
+    const sorted = [...pwop].sort((a,b) => b.overall_combined - a.overall_combined);
+    content.innerHTML = '';
+    const card = h('div',{class:'card'});
+    card.appendChild(h('div',{class:'card-title'},'📊 Ranking por nivel'));
+    const wrap = h('div',{});
     sorted.forEach((p, idx) => {
       const t = trendsMap[p.id];
-      const gp = gamesPlayed[p.id] || 0;
-      const w = wins[p.id] || 0;
-      const wr = gp > 0 ? Math.round((w/gp)*100) : null;
-
-      const row = h('div', { style:'margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--card-border)' });
-
-      // Player header
-      const hdr = h('div', { style:'display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px' });
-      const nameRow = h('div', { style:'display:flex;align-items:center;gap:10px' });
-      nameRow.appendChild(h('div',{style:`width:28px;height:28px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:.9rem;color:var(--muted)`},`${idx+1}`));
-      nameRow.appendChild(h('span',{style:'font-weight:700;font-size:1rem'},p.name + (p.is_goalkeeper?' 🥅':'')));
-      if (t) {
-        const tc={up:'badge-up',down:'badge-down',flat:'badge-flat'};
-        const tl={up:'▲ Alza',down:'▼ Baja',flat:'— Parejo'};
-        nameRow.appendChild(h('span',{class:`badge ${tc[t.trend]}`},tl[t.trend]));
-      }
+      const row = h('div',{style:'margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--card-border)'});
+      const hdr = h('div',{style:'display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px'});
+      const nameRow = h('div',{style:'display:flex;align-items:center;gap:10px;cursor:pointer'});
+      nameRow.appendChild(h('div',{style:'width:28px;height:28px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:.9rem;color:var(--muted)'},`${idx+1}`));
+      nameRow.appendChild(h('span',{style:'font-weight:700;font-size:1rem'},p.name+(p.is_goalkeeper?' 🥅':'')));
+      if (t) nameRow.appendChild(h('span',{class:`badge ${TREND_CLS[t.trend]}`},TREND_LABEL[t.trend]));
+      nameRow.onclick = () => openPlayerModal(p, trendsMap);
       hdr.appendChild(nameRow);
-
-      const metaRow = h('div', { style:'display:flex;gap:12px;align-items:center' });
+      const metaRow = h('div',{style:'display:flex;gap:12px;align-items:center'});
       metaRow.appendChild(h('div',{style:'text-align:center'},
         h('div',{style:'font-family:"Barlow Condensed",sans-serif;font-size:1.5rem;font-weight:900;color:var(--green)'},p.overall_combined.toFixed(1)),
         h('div',{style:'font-size:.7rem;color:var(--muted)'},'OVR')
       ));
-      if (gp > 0) {
-        metaRow.appendChild(h('div',{style:'text-align:center'},
-          h('div',{style:'font-family:"Barlow Condensed",sans-serif;font-size:1.3rem;font-weight:700'},gp),
-          h('div',{style:'font-size:.7rem;color:var(--muted)'},'Partidos')
-        ));
-        if (wr !== null) metaRow.appendChild(h('div',{style:'text-align:center'},
-          h('div',{style:`font-family:"Barlow Condensed",sans-serif;font-size:1.3rem;font-weight:700;color:${wr>=50?'var(--green)':'var(--red)'}`},`${wr}%`),
-          h('div',{style:'font-size:.7rem;color:var(--muted)'},'Victorias')
-        ));
-      }
       hdr.appendChild(metaRow);
       row.appendChild(hdr);
-
-      // Attrs
-      const attGrid = h('div', { class:'attr-grid' });
+      const attGrid = h('div',{class:'attr-grid'});
       attrs.forEach(a => {
-        const v = p.combined[a]?.toFixed(1) || '—';
-        const adminV = p.admin[a]?.toFixed(1) || '—';
-        const cell = h('div', { class:'attr-cell' },
-          h('div',{class:'val'},v),
-          h('div',{class:'lbl'},attrLabels[a]),
-          (v !== adminV ? h('div',{style:'font-size:.65rem;color:var(--muted)',title:'Valor admin'},`admin: ${adminV}`) : null)
-        );
-        attGrid.appendChild(cell);
+        const v = p.combined[a]?.toFixed(1)||'—'; const adminV = p.admin[a]?.toFixed(1)||'—';
+        attGrid.appendChild(h('div',{class:'attr-cell'},
+          h('div',{class:'val'},v), h('div',{class:'lbl'},attrLabels[a]),
+          (v!==adminV ? h('div',{style:'font-size:.65rem;color:var(--muted)'},`admin: ${adminV}`) : null)
+        ));
       });
       row.appendChild(attGrid);
       wrap.appendChild(row);
     });
-
     if (!sorted.length) wrap.appendChild(h('div',{class:'empty'},h('p',{},'No hay jugadores aún')));
-  } catch(e) {
-    wrap.appendChild(h('div',{class:'empty'},h('p',{},'Error cargando estadísticas: '+e.message)));
+    card.appendChild(wrap);
+    content.appendChild(card);
   }
 
-  root.appendChild(card);
+  // --- TEMPORADA ---
+  async function renderTemporada() {
+    content.innerHTML = '';
+    const card = h('div',{class:'card'});
+    card.appendChild(h('div',{class:'card-title'},'🏆 Tabla de temporada'));
+
+    const currentYear = new Date().getFullYear();
+    const years = [currentYear];
+
+    let selYear = currentYear, dateFrom = '', dateTo = '';
+
+    const filters = h('div',{style:'display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px;align-items:flex-end'});
+
+    // Year pills
+    const yearWrap = h('div',{style:'display:flex;gap:4px;flex-wrap:wrap'});
+    const yearBtns = {};
+    years.forEach(y => {
+      const btn = h('button',{style:'padding:4px 12px;border-radius:20px;border:1px solid var(--card-border);background:none;color:var(--muted);cursor:pointer;font-size:.85rem;transition:all .15s'},String(y));
+      btn.onclick = () => { selYear = y; dateFrom=''; dateTo=''; fromInp.value=''; toInp.value=''; updateYearBtns(); loadTable(); };
+      yearBtns[y] = btn;
+      yearWrap.appendChild(btn);
+    });
+    const updateYearBtns = () => {
+      Object.entries(yearBtns).forEach(([y, btn]) => {
+        btn.style.background = Number(y)===selYear && !dateFrom && !dateTo ? 'var(--green)' : 'none';
+        btn.style.color = Number(y)===selYear && !dateFrom && !dateTo ? '#000' : 'var(--muted)';
+        btn.style.borderColor = Number(y)===selYear && !dateFrom && !dateTo ? 'var(--green)' : 'var(--card-border)';
+      });
+    };
+    updateYearBtns();
+    filters.appendChild(h('div',{},h('div',{style:'font-size:.75rem;color:var(--muted);margin-bottom:4px'},'Año'),yearWrap));
+
+    // Date range
+    const fromInp = h('input',{type:'date',style:'background:var(--bg3);border:1px solid var(--card-border);border-radius:8px;padding:5px 10px;color:var(--text);font-size:.85rem'});
+    const toInp = h('input',{type:'date',style:'background:var(--bg3);border:1px solid var(--card-border);border-radius:8px;padding:5px 10px;color:var(--text);font-size:.85rem'});
+    fromInp.oninput = () => { dateFrom=fromInp.value; if(dateFrom||dateTo){ selYear=0; updateYearBtns(); } loadTable(); };
+    toInp.oninput = () => { dateTo=toInp.value; if(dateFrom||dateTo){ selYear=0; updateYearBtns(); } loadTable(); };
+    filters.appendChild(h('div',{},h('div',{style:'font-size:.75rem;color:var(--muted);margin-bottom:4px'},'Desde'),fromInp));
+    filters.appendChild(h('div',{},h('div',{style:'font-size:.75rem;color:var(--muted);margin-bottom:4px'},'Hasta'),toInp));
+    card.appendChild(filters);
+
+    const tableWrap = h('div',{});
+    card.appendChild(tableWrap);
+
+    async function loadTable() {
+      tableWrap.innerHTML = '<div class="spinner" style="display:block;margin:16px auto"></div>';
+      let url = '/stats/season?';
+      if (selYear) url += `year=${selYear}&`;
+      if (dateFrom) url += `date_from=${dateFrom}&`;
+      if (dateTo) url += `date_to=${dateTo}&`;
+      const stats = await api(url);
+      tableWrap.innerHTML = '';
+      if (!stats.length) { tableWrap.appendChild(h('div',{class:'empty'},h('p',{},'Sin partidos en este período'))); return; }
+
+      // Header
+      const hdrRow = h('div',{style:'display:grid;grid-template-columns:28px 1fr 40px 40px 40px 40px 60px 60px;gap:6px;padding:6px 0;font-size:.7rem;color:var(--muted);font-weight:700;border-bottom:1px solid var(--card-border);margin-bottom:4px'});
+      ['#','Jugador','PJ','G','E','P','Pts','%V'].forEach(t => hdrRow.appendChild(h('div',{style:'text-align:center'},t)));
+      hdrRow.children[1].style.textAlign = 'left';
+      tableWrap.appendChild(hdrRow);
+
+      stats.forEach((s, idx) => {
+        const row = h('div',{style:'display:grid;grid-template-columns:28px 1fr 40px 40px 40px 40px 60px 60px;gap:6px;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.04);align-items:center;cursor:pointer'});
+        row.onmouseenter = () => row.style.background = 'rgba(255,255,255,.03)';
+        row.onmouseleave = () => row.style.background = '';
+        const pl = playersWithOp.find(p=>p.id===s.player_id) || {id:s.player_id,name:s.name,is_goalkeeper:false,combined:{},admin:{}};
+        row.onclick = () => openPlayerModal(pl, trendsMap);
+        const cells = [
+          h('div',{style:'text-align:center;font-size:.8rem;color:var(--muted)'},`${idx+1}`),
+          h('div',{style:'font-weight:600;font-size:.9rem'},s.name),
+          h('div',{style:'text-align:center'},`${s.gp}`),
+          h('div',{style:'text-align:center;color:var(--green)'},`${s.wins}`),
+          h('div',{style:'text-align:center;color:var(--yellow)'},`${s.draws}`),
+          h('div',{style:'text-align:center;color:var(--red)'},`${s.losses}`),
+          h('div',{style:`text-align:center;font-family:"Barlow Condensed",sans-serif;font-size:1.1rem;font-weight:900;color:${s.perf_points>=0?'var(--green)':'var(--red)'}`},(s.perf_points>0?'+':'')+s.perf_points),
+          h('div',{style:`text-align:center;color:${s.win_rate>=50?'var(--green)':'var(--red)'}`},s.win_rate+'%'),
+        ];
+        cells.forEach(c => row.appendChild(c));
+        tableWrap.appendChild(row);
+      });
+    }
+
+    await loadTable();
+    content.appendChild(card);
+
+    // Load players data for modal
+    if (!playersWithOp.length) {
+      const [pwop, trends] = await Promise.all([api('/players/with_opinions'), api('/players/trends?lookback=5')]);
+      playersWithOp = pwop;
+      trendsMap = Object.fromEntries(trends.map(t => [t.player_id, t]));
+    }
+  }
+
+  await renderSection();
 }
 
 // =========================================================
@@ -1292,36 +1497,21 @@ function renderPlayerAdmin(root) {
     const gkCb = h('input',{type:'checkbox'}); gkCb.checked = p?.is_goalkeeper||false;
     formCard.appendChild(h('div',{class:'field'},h('label',{class:'check-row'},gkCb,'Es arquero')));
 
-    const regInp = h('input',{type:'range',min:0,max:1,step:0.05,value:p?.regularity||0.7});
-    const regVal = h('span',{style:'color:var(--green);font-weight:700'},Math.round((p?.regularity||0.7)*100)+'%');
-    regInp.oninput = () => { regVal.textContent = Math.round(parseFloat(regInp.value)*100)+'%'; };
-    formCard.appendChild(h('div',{class:'field'},
-      h('div',{style:'display:flex;justify-content:space-between'},h('label',{},'Regularidad (asistencia)'),regVal),
-      h('div',{class:'range-wrap'},regInp)
-    ));
-
     formCard.appendChild(h('div',{style:'font-size:.8rem;color:var(--muted2);margin:10px 0 6px'},'Atributos (rango min–max):'));
     attrs.forEach(a => {
+      const valLbl = h('span',{style:'color:var(--green);font-weight:700'},`${vals[a][0]}–${vals[a][1]}`);
       const lbl = h('div',{style:'display:flex;justify-content:space-between;font-size:.8rem;color:var(--muted2);margin-bottom:3px'},
-        h('span',{},attrLabels[a]),
-        (() => { const s=h('span',{style:'color:var(--green);font-weight:700'},`${vals[a][0]}–${vals[a][1]}`); return s; })()
+        h('span',{},attrLabels[a]), valLbl
       );
-      const mn=h('input',{type:'range',min:1,max:10,step:0.5,value:vals[a][0]});
-      const mx=h('input',{type:'range',min:1,max:10,step:0.5,value:vals[a][1]});
-      const upd=()=>{
-        let mnv=parseFloat(mn.value),mxv=parseFloat(mx.value);
-        if(mnv>mxv)mxv=mnv;
-        vals[a]=[mnv,mxv];
-        lbl.querySelector('span:last-child').textContent=`${mnv}–${mxv}`;
-      };
-      mn.oninput=upd; mx.oninput=upd;
-      formCard.appendChild(h('div',{style:'margin-bottom:8px'},lbl,h('div',{class:'range-wrap'},mn,mx)));
+      formCard.appendChild(h('div',{style:'margin-bottom:8px'}, lbl,
+        mkRangeDouble(vals[a][0], vals[a][1], valLbl, (mn, mx) => { vals[a]=[mn,mx]; })
+      ));
     });
 
     const btnRow = h('div',{style:'display:flex;gap:8px;margin-top:12px;flex-wrap:wrap'});
     const saveBtn = h('button',{class:'btn btn-green',onClick:async()=>{
       const body = {
-        name: nameInp.value.trim(), is_goalkeeper: gkCb.checked, regularity: parseFloat(regInp.value),
+        name: nameInp.value.trim(), is_goalkeeper: gkCb.checked,
         ...Object.fromEntries(attrs.flatMap(a=>[[ `${a}_min`,vals[a][0]],[`${a}_max`,vals[a][1]]]))
       };
       if (!body.name) { toast('Ingresá un nombre','err'); return; }
