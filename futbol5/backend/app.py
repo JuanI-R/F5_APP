@@ -192,6 +192,19 @@ class TeamGenResponse(BaseModel):
 class PlayerTrendOut(BaseModel):
     player_id: int; trend: Literal["up2","up1","flat","down1","down2"]; score: int
 
+class PlayerSeasonStat(BaseModel):
+    player_id: int; name: str; gp: int; wins: int; losses: int; draws: int
+    perf_points: int; win_rate: float
+
+class MatchHistoryEntry(BaseModel):
+    match_id: int; played_at: datetime; winner_team: str
+    goal_diff: int | None; my_team: str; result: str
+    perf_score: int; rank_pos: int | None
+
+class ChemistryOut(BaseModel):
+    best_partner_id: int | None; best_partner_name: str | None; best_partner_win_rate: float | None
+    worst_rival_id: int | None; worst_rival_name: str | None; worst_rival_win_rate: float | None
+
 # ---- APP ----
 app = FastAPI(title="Futbol5 API", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
@@ -219,7 +232,7 @@ def clamp(v): return float(max(1.0, min(10.0, v)))
 def next_thursday():
     dt = datetime.utcnow()
     days_ahead = (3 - dt.weekday()) % 7 or 7
-    return (dt + timedelta(days=days_ahead)).replace(hour=20,minute=0,second=0,microsecond=0)
+    return (dt + timedelta(days=days_ahead)).replace(hour=21,minute=0,second=0,microsecond=0)
 
 def _perf_score(pid, m):
     rw = csv_split(m.rank_winners) or []
@@ -464,3 +477,83 @@ def players_trends(lookback: int=3, db=Depends(get_session)):
                 if count >= lookback: break
         out.append(PlayerTrendOut(player_id=p.id, trend=_trend(total), score=total))
     return out
+
+@app.get("/stats/season", response_model=List[PlayerSeasonStat])
+def season_stats(year: int | None = None, date_from: str | None = None, date_to: str | None = None, db=Depends(get_session)):
+    q = db.query(Match).filter(Match.is_recorded==True)
+    if year:
+        q = q.filter(func.strftime('%Y', Match.played_at) == str(year))
+    if date_from:
+        q = q.filter(Match.played_at >= datetime.fromisoformat(date_from))
+    if date_to:
+        q = q.filter(Match.played_at <= datetime.fromisoformat(date_to))
+    matches = q.all()
+    players = db.query(Player).all()
+    out = []
+    for p in players:
+        gp = wins = losses = draws = perf = 0
+        for m in matches:
+            ta = csv_split(m.team_a) or []; tb = csv_split(m.team_b) or []
+            if p.id in ta:
+                gp += 1; perf += _perf_score(p.id, m)
+                if m.winner_team=='A': wins += 1
+                elif m.winner_team=='B': losses += 1
+                else: draws += 1
+            elif p.id in tb:
+                gp += 1; perf += _perf_score(p.id, m)
+                if m.winner_team=='B': wins += 1
+                elif m.winner_team=='A': losses += 1
+                else: draws += 1
+        if gp > 0:
+            out.append(PlayerSeasonStat(player_id=p.id, name=p.name, gp=gp, wins=wins,
+                losses=losses, draws=draws, perf_points=perf,
+                win_rate=round(wins/gp*100, 1)))
+    return sorted(out, key=lambda x: (-x.perf_points, -x.win_rate))
+
+@app.get("/players/{pid}/history", response_model=List[MatchHistoryEntry])
+def player_history(pid: int, db=Depends(get_session)):
+    matches = db.query(Match).filter(Match.is_recorded==True).order_by(Match.played_at.desc()).all()
+    out = []
+    for m in matches:
+        ta = csv_split(m.team_a) or []; tb = csv_split(m.team_b) or []
+        if pid in ta: my_team = 'A'
+        elif pid in tb: my_team = 'B'
+        else: continue
+        result = 'D' if m.winner_team=='D' else ('W' if m.winner_team==my_team else 'L')
+        rw = csv_split(m.rank_winners) or []; rl = csv_split(m.rank_losers) or []
+        rank_pos = (rw.index(pid)+1) if pid in rw else ((rl.index(pid)+1) if pid in rl else None)
+        out.append(MatchHistoryEntry(match_id=m.id, played_at=m.played_at, winner_team=m.winner_team,
+            goal_diff=m.goal_diff, my_team=my_team, result=result,
+            perf_score=_perf_score(pid, m), rank_pos=rank_pos))
+    return out
+
+@app.get("/players/{pid}/chemistry", response_model=ChemistryOut)
+def player_chemistry(pid: int, db=Depends(get_session)):
+    matches = db.query(Match).filter(Match.is_recorded==True).all()
+    player_map = {p.id: p.name for p in db.query(Player).all()}
+    partner_stats: Dict[int, list] = {}
+    rival_stats: Dict[int, list] = {}
+    for m in matches:
+        ta = csv_split(m.team_a) or []; tb = csv_split(m.team_b) or []
+        if pid in ta: my_team, opp_team, won = ta, tb, m.winner_team=='A'
+        elif pid in tb: my_team, opp_team, won = tb, ta, m.winner_team=='B'
+        else: continue
+        for pid2 in my_team:
+            if pid2 == pid: continue
+            s = partner_stats.setdefault(pid2, [0,0]); s[0]+=1
+            if won: s[1]+=1
+        for pid2 in opp_team:
+            s = rival_stats.setdefault(pid2, [0,0]); s[0]+=1
+            if won: s[1]+=1
+    def best(stats, highest):
+        bst_id = bst_wr = None
+        for pid2, (gp, w) in stats.items():
+            if gp < 2: continue
+            wr = w/gp
+            if bst_wr is None or (wr > bst_wr if highest else wr < bst_wr): bst_wr = wr; bst_id = pid2
+        return bst_id, round(bst_wr*100,1) if bst_wr is not None else None
+    bp_id, bp_wr = best(partner_stats, True)
+    br_id, br_wr = best(rival_stats, False)
+    return ChemistryOut(
+        best_partner_id=bp_id, best_partner_name=player_map.get(bp_id) if bp_id else None, best_partner_win_rate=bp_wr,
+        worst_rival_id=br_id, worst_rival_name=player_map.get(br_id) if br_id else None, worst_rival_win_rate=br_wr)
