@@ -8,6 +8,11 @@ from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
 import itertools, json, os
 
+from dotenv import load_dotenv
+load_dotenv()  # carga .env si existe (desarrollo local; en Railway se usan env vars del panel)
+
+ADMIN_PIN = os.environ.get("ADMIN_PIN", "1234")
+
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float, DateTime,
     ForeignKey, UniqueConstraint, Text, Boolean, func, event
@@ -463,6 +468,12 @@ def delete_match(mid: int, db=Depends(get_session)):
     m = db.query(Match).get(mid)
     if not m: raise HTTPException(404, "Partido no encontrado")
     db.delete(m); db.commit(); return {"ok": True}
+
+@app.post("/admin/verify")
+def admin_verify(body: dict):
+    if body.get("pin") == ADMIN_PIN:
+        return {"ok": True}
+    raise HTTPException(401, "PIN incorrecto")
 
 @app.get("/players/trends", response_model=List[PlayerTrendOut])
 def players_trends(lookback: int=3, db=Depends(get_session)):
