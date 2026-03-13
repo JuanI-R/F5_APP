@@ -15,7 +15,7 @@ ADMIN_PIN = os.environ.get("ADMIN_PIN", "1234")
 
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float, DateTime,
-    ForeignKey, UniqueConstraint, Text, Boolean, func, event
+    ForeignKey, UniqueConstraint, Text, Boolean, func, event, extract
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -604,7 +604,7 @@ def players_trends(lookback: int=3, db=Depends(get_session)):
 def season_stats(year: int | None = None, date_from: str | None = None, date_to: str | None = None, db=Depends(get_session)):
     q = db.query(Match).filter(Match.is_recorded==True)
     if year:
-        q = q.filter(func.strftime('%Y', Match.played_at) == str(year))
+        q = q.filter(extract('year', Match.played_at) == year)
     if date_from:
         q = q.filter(Match.played_at >= datetime.fromisoformat(date_from))
     if date_to:
