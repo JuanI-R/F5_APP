@@ -283,22 +283,20 @@ def _perf_score(pid, m):
     # Rankeado como ganador
     if pid in rw:
         pos = rw.index(pid) + 1
-        return 4 if pos == 1 else (3 if pos == 2 else 2)
+        return 2 if pos <= 2 else 1
 
     # Rankeado como perdedor
     if pid in rl:
         pos = rl.index(pid) + 1
-        return 1 if pos == 1 else (0 if pos == 2 else -1)
+        return 0 if pos == 1 else -1
 
-    # No rankeado individualmente: distinguir si ganó o perdió
+    # No rankeado: distinguir si ganó o perdió
     if m.winner_team in ("A", "B"):
         win_ids  = csv_split(m.team_a) if m.winner_team == "A" else csv_split(m.team_b)
         lose_ids = csv_split(m.team_b) if m.winner_team == "A" else csv_split(m.team_a)
-        win_ids  = win_ids  or []
-        lose_ids = lose_ids or []
-        if pid in win_ids:
-            return 1   # Ganó pero no fue destacado
-        if pid in lose_ids:
+        if pid in (win_ids or []):
+            return 0   # Ganó pero sin destacarse
+        if pid in (lose_ids or []):
             return -2  # Perdió y no fue destacado (los 2 peores)
 
     return 0  # Empate o no jugó
@@ -307,7 +305,7 @@ def _in_match(pid, m):
     return pid in (csv_split(m.team_a) or []) + (csv_split(m.team_b) or [])
 
 def _trend(total):
-    if total >= 8: return "up2"
+    if total >= 5: return "up2"
     if total >= 3: return "up1"
     if total >= -2: return "flat"
     if total >= -5: return "down1"
