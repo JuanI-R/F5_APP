@@ -99,6 +99,17 @@ class Match(Base):
 
 Base.metadata.create_all(bind=engine)
 
+# ---- MIGRATIONS: agregar columnas nuevas a tablas existentes ----
+def _run_migrations():
+    with engine.connect() as conn:
+        # password_hash en players
+        try:
+            conn.execute(__import__('sqlalchemy').text("ALTER TABLE players ADD COLUMN password_hash VARCHAR"))
+            conn.commit()
+        except Exception:
+            pass  # columna ya existe
+_run_migrations()
+
 # ---- INIT SEQUENCE ----
 # Asegura que la secuencia de IDs de jugadores registre el máximo actual
 def _init_player_sequence():
