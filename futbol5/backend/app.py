@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
-import itertools, json, os
+import itertools, json, os, hashlib
 
 from dotenv import load_dotenv
 load_dotenv()  # carga .env si existe (desarrollo local; en Railway se usan env vars del panel)
@@ -46,6 +46,7 @@ class Player(Base):
     vision_min = Column(Float, default=4.0);  vision_max = Column(Float, default=6.0)
     stamina_min = Column(Float, default=4.0); stamina_max = Column(Float, default=6.0)
     speed_min = Column(Float, default=4.0);   speed_max = Column(Float, default=6.0)
+    password_hash = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -217,6 +218,7 @@ class TeamGenRequest(BaseModel):
 class TeamGenResponse(BaseModel):
     team_a: List[int]; team_b: List[int]
     score_diff: float; syn_sum: float; skill_sum_a: float; skill_sum_b: float
+    option_num: int = 1
 
 class PlayerTrendOut(BaseModel):
     player_id: int; trend: Literal["up2","up1","flat","down1","down2"]; score: int
@@ -305,6 +307,9 @@ def trends_snapshot(db, pids, lookback=3):
                 if count >= lookback: break
         out[pid] = {"trend": _trend(total), "score": total}
     return out
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
 
 def pref_weight(db, i, j):
     p = db.query(Preference).filter(Preference.src_id==i, Preference.dst_id==j).first()
@@ -437,7 +442,7 @@ def add_opinion(op: OpinionIn, db=Depends(get_session)):
     return {"ok": True}
 
 # ---- ROUTES: TEAMS ----
-@app.post("/generate_teams", response_model=TeamGenResponse)
+@app.post("/generate_teams", response_model=List[TeamGenResponse])
 def generate_teams(req: TeamGenRequest, db=Depends(get_session)):
     ids = req.player_ids
     if len(ids) != 10: raise HTTPException(400, "Debes enviar exactamente 10 jugadores")
@@ -453,24 +458,31 @@ def generate_teams(req: TeamGenRequest, db=Depends(get_session)):
         return _trend(total)
     ovrs = {p.id: compute_overall_with_trend(p, get_player_trend(p.id)) for p in players}
     gk_ids = {p.id for p in players if p.is_goalkeeper}
-    best, best_c = None, None
+    top = []  # list of (sort_key, data)
     for comb in itertools.combinations(ids, 5):
-        ta, tb = set(comb), set(ids)-set(comb)
-        sa, syn_a, sk_a = team_score(db, list(ta), req.lambda_syn, ovrs)
-        sb, syn_b, sk_b = team_score(db, list(tb), req.lambda_syn, ovrs)
+        ta = list(comb); tb = [x for x in ids if x not in set(comb)]
+        sa, syn_a, sk_a = team_score(db, ta, req.lambda_syn, ovrs)
+        sb, syn_b, sk_b = team_score(db, tb, req.lambda_syn, ovrs)
+        ta_set, tb_set = set(ta), set(tb)
         if len(gk_ids) >= 1:
-            if not (ta & gk_ids): sa -= 25.0
-            if not (tb & gk_ids): sb -= 25.0
+            if not (ta_set & gk_ids): sa -= 25.0
+            if not (tb_set & gk_ids): sb -= 25.0
         if len(gk_ids) >= 2:
-            imb = abs(len(ta&gk_ids)-len(tb&gk_ids))
+            imb = abs(len(ta_set & gk_ids) - len(tb_set & gk_ids))
             if imb: sa -= 5.0*imb; sb -= 5.0*imb
         diff = abs(sa-sb); syn_total = syn_a+syn_b
         c = (diff, -syn_total, -(sk_a+sk_b))
-        if best_c is None or c < best_c:
-            best_c = c; best = (list(ta), list(tb), diff, syn_total, sk_a, sk_b)
-    if not best: raise HTTPException(400, "No se pudo generar equipos")
-    ta, tb, diff, syn_sum, sk_a, sk_b = best
-    return TeamGenResponse(team_a=ta, team_b=tb, score_diff=diff, syn_sum=syn_sum, skill_sum_a=sk_a, skill_sum_b=sk_b)
+        entry = (c, (ta, tb, diff, syn_total, sk_a, sk_b))
+        if len(top) < 3:
+            top.append(entry); top.sort(key=lambda x: x[0])
+        elif c < top[-1][0]:
+            top[-1] = entry; top.sort(key=lambda x: x[0])
+    if not top: raise HTTPException(400, "No se pudo generar equipos")
+    return [
+        TeamGenResponse(team_a=ta, team_b=tb, score_diff=diff, syn_sum=syn_sum,
+                        skill_sum_a=sk_a, skill_sum_b=sk_b, option_num=i+1)
+        for i, (_, (ta, tb, diff, syn_sum, sk_a, sk_b)) in enumerate(top)
+    ]
 
 # ---- ROUTES: MATCHES ----
 @app.post("/matches", response_model=MatchOut)
@@ -511,6 +523,42 @@ def admin_verify(body: dict):
     if body.get("pin") == ADMIN_PIN:
         return {"ok": True}
     raise HTTPException(401, "PIN incorrecto")
+
+# ---- ROUTES: PLAYER PASSWORDS ----
+@app.get("/players/{pid}/password_status")
+def player_password_status(pid: int, db=Depends(get_session)):
+    pl = db.query(Player).get(pid)
+    if not pl: raise HTTPException(404, "Jugador no encontrado")
+    return {"has_password": pl.password_hash is not None}
+
+@app.post("/players/{pid}/set_password")
+def set_player_password(pid: int, body: dict, db=Depends(get_session)):
+    pl = db.query(Player).get(pid)
+    if not pl: raise HTTPException(404, "Jugador no encontrado")
+    pw = (body.get("password") or "").strip()
+    if not pw: raise HTTPException(400, "Contraseña vacía")
+    pl.password_hash = hash_password(pw)
+    db.commit()
+    return {"ok": True}
+
+@app.post("/players/{pid}/verify_password")
+def verify_player_password(pid: int, body: dict, db=Depends(get_session)):
+    pl = db.query(Player).get(pid)
+    if not pl: raise HTTPException(404, "Jugador no encontrado")
+    if not pl.password_hash: return {"ok": True}
+    if hash_password(body.get("password") or "") == pl.password_hash:
+        return {"ok": True}
+    raise HTTPException(401, "Contraseña incorrecta")
+
+@app.post("/players/{pid}/reset_password")
+def reset_player_password(pid: int, body: dict, db=Depends(get_session)):
+    if body.get("pin") != ADMIN_PIN:
+        raise HTTPException(401, "PIN incorrecto")
+    pl = db.query(Player).get(pid)
+    if not pl: raise HTTPException(404, "Jugador no encontrado")
+    pl.password_hash = None
+    db.commit()
+    return {"ok": True}
 
 @app.get("/players/trends", response_model=List[PlayerTrendOut])
 def players_trends(lookback: int=3, db=Depends(get_session)):
