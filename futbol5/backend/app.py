@@ -28,6 +28,12 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 # ---- MODELS ----
+class PlayerIdSequence(Base):
+    """Tracks max ever-used player ID to prevent ID recycling on SQLite."""
+    __tablename__ = "player_id_sequence"
+    id = Column(Integer, primary_key=True, default=1)
+    max_id = Column(Integer, default=0)
+
 class Player(Base):
     __tablename__ = "players"
     id = Column(Integer, primary_key=True)
@@ -92,6 +98,21 @@ class Match(Base):
 
 Base.metadata.create_all(bind=engine)
 
+# ---- INIT SEQUENCE ----
+# Asegura que la secuencia de IDs de jugadores registre el máximo actual
+def _init_player_sequence():
+    db = SessionLocal()
+    try:
+        seq = db.query(PlayerIdSequence).filter(PlayerIdSequence.id==1).first()
+        current_max = db.query(func.max(Player.id)).scalar() or 0
+        if not seq:
+            db.add(PlayerIdSequence(id=1, max_id=current_max)); db.commit()
+        elif seq.max_id < current_max:
+            seq.max_id = current_max; db.commit()
+    finally:
+        db.close()
+_init_player_sequence()
+
 # ---- WEIGHTS ----
 FIELD_WEIGHTS = {"shot":1.2,"passing":1.0,"defense":1.1,"vision":1.0,"stamina":0.9,"speed":0.9}
 GK_WEIGHTS    = {"shot":0.4,"passing":0.9,"defense":1.4,"vision":1.0,"stamina":1.0,"speed":0.8}
@@ -111,12 +132,14 @@ def admin_attr_vals(p: Player):
     return {k: (getattr(p,f"{k}_min")+getattr(p,f"{k}_max"))/2 for k in ["shot","passing","defense","vision","stamina","speed"]}
 
 def combined_attr_vals(db, pid, admin_vals):
+    """Promedia TODAS las opiniones por igual (incluyendo la del admin si la cargó).
+    Si no hay ninguna opinión registrada, devuelve los valores base del jugador."""
     ops = db.query(Opinion).filter(Opinion.target_player_id==pid).all()
     if not ops: return dict(admin_vals)
     attrs = list(admin_vals.keys())
     combined = {}
     for attr in attrs:
-        vals = [admin_vals[attr]] + [(getattr(o,f"{attr}_min")+getattr(o,f"{attr}_max"))/2 for o in ops]
+        vals = [(getattr(o,f"{attr}_min")+getattr(o,f"{attr}_max"))/2 for o in ops]
         combined[attr] = sum(vals)/len(vals)
     return combined
 
@@ -186,6 +209,7 @@ class MatchResultIn(BaseModel):
     goal_diff: int = Field(..., ge=0); winner_team: Literal["A","B","D"]
     rank_winners: List[int] = Field(default_factory=list)
     rank_losers: List[int] = Field(default_factory=list)
+    played_at: datetime | None = None
 
 class TeamGenRequest(BaseModel):
     player_ids: List[int]; lambda_syn: float = 10.0
@@ -332,7 +356,14 @@ def get_players_with_opinions(db=Depends(get_session)):
 def create_player(p: PlayerIn, db=Depends(get_session)):
     if db.query(Player).filter(Player.name==p.name).first():
         raise HTTPException(400, "Ya existe un jugador con ese nombre")
-    pl = Player(**p.dict()); db.add(pl); db.commit(); db.refresh(pl)
+    # Garantizar PK única que nunca se reutiliza, incluso luego de borrar jugadores
+    seq = db.query(PlayerIdSequence).filter(PlayerIdSequence.id==1).first()
+    if not seq:
+        seq = PlayerIdSequence(id=1, max_id=0); db.add(seq); db.flush()
+    current_max = db.query(func.max(Player.id)).scalar() or 0
+    new_id = max(seq.max_id, current_max) + 1
+    seq.max_id = new_id
+    pl = Player(id=new_id, **p.dict()); db.add(pl); db.commit(); db.refresh(pl)
     return player_out(pl)
 
 @app.put("/players/{pid}", response_model=PlayerOut)
@@ -346,6 +377,12 @@ def update_player(pid: int, p: PlayerIn, db=Depends(get_session)):
 def delete_player(pid: int, db=Depends(get_session)):
     pl = db.query(Player).get(pid)
     if not pl: raise HTTPException(404, "Jugador no encontrado")
+    # Limpiar todas las relaciones para evitar que un nuevo jugador con el mismo ID herede datos
+    db.query(Preference).filter((Preference.src_id==pid) | (Preference.dst_id==pid)).delete(synchronize_session=False)
+    db.query(Opinion).filter((Opinion.target_player_id==pid) | (Opinion.actor_user_id.in_(
+        db.query(User.id).filter(User.player_id==pid).scalar_subquery()
+    ))).delete(synchronize_session=False)
+    db.query(User).filter(User.player_id==pid).update({User.player_id: None}, synchronize_session=False)
     db.delete(pl); db.commit(); return {"ok": True}
 
 # ---- ROUTES: PREFERENCES ----
@@ -458,7 +495,7 @@ def record_result(mid: int, data: MatchResultIn, db=Depends(get_session)):
     m.winner_team=data.winner_team; m.goal_diff=data.goal_diff
     m.rank_winners=csv_join(data.rank_winners) if data.rank_winners else None
     m.rank_losers=csv_join(data.rank_losers) if data.rank_losers else None
-    m.is_recorded=True; m.played_at=datetime.utcnow()
+    m.is_recorded=True; m.played_at=data.played_at or datetime.utcnow()
     all_ids = (csv_split(m.team_a) or []) + (csv_split(m.team_b) or [])
     m.trends_snapshot = json.dumps(trends_snapshot(db, all_ids, lookback=3))
     db.commit(); db.refresh(m); return to_match_out(m)
