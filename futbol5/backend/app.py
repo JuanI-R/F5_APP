@@ -279,21 +279,38 @@ def next_thursday():
 def _perf_score(pid, m):
     rw = csv_split(m.rank_winners) or []
     rl = csv_split(m.rank_losers) or []
+
+    # Rankeado como ganador
     if pid in rw:
-        pos = rw.index(pid)+1
-        return 3 if pos==1 else (2 if pos==2 else 1)
+        pos = rw.index(pid) + 1
+        return 4 if pos == 1 else (3 if pos == 2 else 2)
+
+    # Rankeado como perdedor
     if pid in rl:
-        return 2 if (rl.index(pid)+1)==1 else -1
-    return 0
+        pos = rl.index(pid) + 1
+        return 1 if pos == 1 else (0 if pos == 2 else -1)
+
+    # No rankeado individualmente: distinguir si ganó o perdió
+    if m.winner_team in ("A", "B"):
+        win_ids  = csv_split(m.team_a) if m.winner_team == "A" else csv_split(m.team_b)
+        lose_ids = csv_split(m.team_b) if m.winner_team == "A" else csv_split(m.team_a)
+        win_ids  = win_ids  or []
+        lose_ids = lose_ids or []
+        if pid in win_ids:
+            return 1   # Ganó pero no fue destacado
+        if pid in lose_ids:
+            return -2  # Perdió y no fue destacado (los 2 peores)
+
+    return 0  # Empate o no jugó
 
 def _in_match(pid, m):
     return pid in (csv_split(m.team_a) or []) + (csv_split(m.team_b) or [])
 
 def _trend(total):
-    if total >= 6: return "up2"
+    if total >= 8: return "up2"
     if total >= 3: return "up1"
-    if total >= 0: return "flat"
-    if total >= -2: return "down1"
+    if total >= -2: return "flat"
+    if total >= -5: return "down1"
     return "down2"
 
 STREAK_FACTORS = {"up2": 0.95, "up1": 0.70, "flat": 0.50, "down1": 0.30, "down2": 0.05}
