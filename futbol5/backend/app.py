@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import List, Dict, Literal, Any
-from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi import FastAPI, HTTPException, Depends, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -544,9 +544,13 @@ def delete_match(mid: int, db=Depends(get_session)):
     if not m: raise HTTPException(404, "Partido no encontrado")
     db.delete(m); db.commit(); return {"ok": True}
 
+def check_admin(x_admin_pin: str = Header(None)):
+    if x_admin_pin != ADMIN_PIN:
+        raise HTTPException(401, "PIN incorrecto")
+
 @app.post("/admin/verify")
-def admin_verify(body: dict):
-    if body.get("pin") == ADMIN_PIN:
+def admin_verify(x_admin_pin: str = Header(None)):
+    if x_admin_pin == ADMIN_PIN:
         return {"ok": True}
     raise HTTPException(401, "PIN incorrecto")
 
@@ -577,9 +581,7 @@ def verify_player_password(pid: int, body: dict, db=Depends(get_session)):
     raise HTTPException(401, "Contraseña incorrecta")
 
 @app.post("/players/{pid}/reset_password")
-def reset_player_password(pid: int, body: dict, db=Depends(get_session)):
-    if body.get("pin") != ADMIN_PIN:
-        raise HTTPException(401, "PIN incorrecto")
+def reset_player_password(pid: int, db=Depends(get_session), _=Depends(check_admin)):
     pl = db.query(Player).get(pid)
     if not pl: raise HTTPException(404, "Jugador no encontrado")
     pl.password_hash = None
