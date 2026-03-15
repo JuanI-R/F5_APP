@@ -47,6 +47,7 @@ class Player(Base):
     stamina_min = Column(Float, default=4.0); stamina_max = Column(Float, default=6.0)
     speed_min = Column(Float, default=4.0);   speed_max = Column(Float, default=6.0)
     password_hash = Column(String, nullable=True)
+    last_login = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -107,7 +108,13 @@ def _run_migrations():
             conn.execute(__import__('sqlalchemy').text("ALTER TABLE players ADD COLUMN password_hash VARCHAR"))
             conn.commit()
         except Exception:
-            pass  # columna ya existe
+            pass
+        # last_login en players
+        try:
+            conn.execute(__import__('sqlalchemy').text("ALTER TABLE players ADD COLUMN last_login TIMESTAMP"))
+            conn.commit()
+        except Exception:
+            pass
 _run_migrations()
 
 # ---- INIT SEQUENCE ----
@@ -169,6 +176,9 @@ class PlayerIn(BaseModel):
 
 class PlayerOut(PlayerIn):
     id: int; overall_expected: float
+    password_hash: str | None = None
+    last_login: datetime | None = None
+    created_at: datetime | None = None
     class Config: orm_mode = True
 
 class PlayerWithOpinionsOut(BaseModel):
@@ -587,6 +597,41 @@ def reset_player_password(pid: int, db=Depends(get_session), _=Depends(check_adm
     pl.password_hash = None
     db.commit()
     return {"ok": True}
+
+@app.post("/players/{pid}/ping")
+def player_ping(pid: int, db=Depends(get_session)):
+    pl = db.query(Player).get(pid)
+    if not pl: raise HTTPException(404, "Jugador no encontrado")
+    pl.last_login = datetime.utcnow()
+    db.commit()
+    return {"ok": True}
+
+@app.get("/admin/participation")
+def admin_participation(db=Depends(get_session)):
+    players = db.query(Player).order_by(Player.name).all()
+    opinions = db.query(Opinion).all()
+    # Opinions use actor_user_id = player.id (players act as users in this app)
+    op_map = {}  # (actor_id, target_id) -> True
+    for o in opinions:
+        op_map[(o.actor_user_id, o.target_player_id)] = True
+    result = []
+    for p in players:
+        others = [x for x in players if x.id != p.id]
+        self_eval = op_map.get((p.id, p.id), False)
+        evals_given = sum(1 for x in others if op_map.get((p.id, x.id), False))
+        evals_received = sum(1 for x in others if op_map.get((x.id, p.id), False))
+        missing_evals = [x.name for x in others if not op_map.get((p.id, x.id), False)]
+        result.append({
+            "id": p.id, "name": p.name, "is_goalkeeper": p.is_goalkeeper,
+            "self_eval": self_eval,
+            "evals_given": evals_given, "total_to_give": len(others),
+            "evals_received": evals_received,
+            "missing_evals": missing_evals,
+            "last_login": p.last_login.isoformat() if p.last_login else None,
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+            "has_password": p.password_hash is not None,
+        })
+    return result
 
 @app.get("/players/trends", response_model=List[PlayerTrendOut])
 def players_trends(lookback: int=3, db=Depends(get_session)):
