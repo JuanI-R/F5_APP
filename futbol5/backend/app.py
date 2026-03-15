@@ -102,19 +102,16 @@ Base.metadata.create_all(bind=engine)
 
 # ---- MIGRATIONS: agregar columnas nuevas a tablas existentes ----
 def _run_migrations():
-    with engine.connect() as conn:
-        # password_hash en players
-        try:
-            conn.execute(__import__('sqlalchemy').text("ALTER TABLE players ADD COLUMN password_hash VARCHAR"))
-            conn.commit()
-        except Exception:
-            pass
-        # last_login en players
-        try:
-            conn.execute(__import__('sqlalchemy').text("ALTER TABLE players ADD COLUMN last_login TIMESTAMP"))
-            conn.commit()
-        except Exception:
-            pass
+    for sql in [
+        "ALTER TABLE players ADD COLUMN password_hash VARCHAR",
+        "ALTER TABLE players ADD COLUMN last_login TIMESTAMP",
+    ]:
+        with engine.connect() as conn:
+            try:
+                conn.execute(__import__('sqlalchemy').text(sql))
+                conn.commit()
+            except Exception:
+                conn.rollback()
 _run_migrations()
 
 # ---- INIT SEQUENCE ----
