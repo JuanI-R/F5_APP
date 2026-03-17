@@ -723,3 +723,41 @@ def player_chemistry(pid: int, db=Depends(get_session)):
     return ChemistryOut(
         best_partner_id=bp_id, best_partner_name=player_map.get(bp_id) if bp_id else None, best_partner_win_rate=bp_wr,
         worst_rival_id=br_id, worst_rival_name=player_map.get(br_id) if br_id else None, worst_rival_win_rate=br_wr)
+
+@app.get("/players/{pid}/partners")
+def player_partners(pid: int, min_games: int = 2, db=Depends(get_session)):
+    matches = db.query(Match).filter(Match.is_recorded==True).all()
+    player_map = {p.id: p.name for p in db.query(Player).all()}
+    partner_stats: Dict[int, list] = {}  # pid2 -> [gp, wins]
+    rival_stats: Dict[int, list] = {}
+    for m in matches:
+        ta = csv_split(m.team_a) or []; tb = csv_split(m.team_b) or []
+        if pid in ta: my_team, opp_team, won = ta, tb, m.winner_team=='A'
+        elif pid in tb: my_team, opp_team, won = tb, ta, m.winner_team=='B'
+        else: continue
+        draw = m.winner_team == 'D'
+        for pid2 in my_team:
+            if pid2 == pid: continue
+            s = partner_stats.setdefault(pid2, [0,0,0]); s[0]+=1
+            if won: s[1]+=1
+            if draw: s[2]+=1
+        for pid2 in opp_team:
+            s = rival_stats.setdefault(pid2, [0,0,0]); s[0]+=1
+            if won: s[1]+=1
+            if draw: s[2]+=1
+
+    def build_list(stats):
+        out = []
+        for pid2, (gp, wins, draws) in stats.items():
+            if gp < min_games: continue
+            out.append({
+                "id": pid2, "name": player_map.get(pid2, f"#{pid2}"),
+                "gp": gp, "wins": wins, "draws": draws, "losses": gp-wins-draws,
+                "win_rate": round(wins/gp*100, 1)
+            })
+        return sorted(out, key=lambda x: (-x["win_rate"], -x["gp"]))
+
+    return {
+        "partners": build_list(partner_stats),
+        "rivals": build_list(rival_stats),
+    }
