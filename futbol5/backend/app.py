@@ -514,19 +514,27 @@ def generate_teams(req: TeamGenRequest, db=Depends(get_session)):
                 if count >= 3: break
         return _trend(total)
     ovrs = {p.id: compute_combined_with_trend(p, get_player_trend(p.id), db) for p in players}
-    # Per-attribute combined values for balance penalty
+    # Pre-cargar atributos y preferencias para evitar queries dentro del loop
     ATTRS = ["shot", "passing", "defense", "vision", "stamina", "speed"]
     attr_vals = {}
     for p in players:
         admin_v = admin_attr_vals(p)
         attr_vals[p.id] = combined_attr_vals(db, p.id, admin_v)
+    prefs = {}
+    if req.use_synergy:
+        rows = db.query(Preference).filter(
+            Preference.src_id.in_(ids), Preference.dst_id.in_(ids)
+        ).all()
+        for r in rows:
+            prefs[(r.src_id, r.dst_id)] = r.weight
+    def syn_pair(a, b):
+        return (prefs.get((a, b), 0) + prefs.get((b, a), 0)) / 2.0
     gk_ids = {p.id for p in players if p.is_goalkeeper}
     top = []  # list of (sort_key, data)
     for comb in itertools.combinations(ids, 5):
         ta = list(comb); tb = [x for x in ids if x not in set(comb)]
-        # Skill puro (sin sinergia) para el balance principal
-        _, syn_a, sk_a = team_score(db, ta, 0.0, ovrs)
-        _, syn_b, sk_b = team_score(db, tb, 0.0, ovrs)
+        sk_a = sum(ovrs[i] for i in ta)
+        sk_b = sum(ovrs[i] for i in tb)
         ta_set, tb_set = set(ta), set(tb)
         # GK balance: criterio primario absoluto
         gk_a = len(ta_set & gk_ids)
@@ -534,15 +542,16 @@ def generate_teams(req: TeamGenRequest, db=Depends(get_session)):
         if len(gk_ids) == 0:
             gk_penalty = 0
         elif gk_a == 0 or gk_b == 0:
-            gk_penalty = 100   # ningún equipo puede quedar sin arquero
+            gk_penalty = 100
         else:
-            gk_penalty = abs(gk_a - gk_b)   # preferir distribución pareja (1+1, 2+1...)
-        # Sinergia: solo si use_synergy está activo
+            gk_penalty = abs(gk_a - gk_b)
+        # Sinergia como desempate (sin queries)
         syn_total = 0.0
         if req.use_synergy:
-            syn_a = sum((pref_weight(db,a,b)+pref_weight(db,b,a))/2.0 for a,b in itertools.combinations(ta,2))
-            syn_b = sum((pref_weight(db,a,b)+pref_weight(db,b,a))/2.0 for a,b in itertools.combinations(tb,2))
-            syn_total = syn_a + syn_b
+            syn_total = (
+                sum(syn_pair(a, b) for a, b in itertools.combinations(ta, 2)) +
+                sum(syn_pair(a, b) for a, b in itertools.combinations(tb, 2))
+            )
         diff = abs(sk_a - sk_b)
         # Per-attribute balance penalty
         attr_diff = sum(
