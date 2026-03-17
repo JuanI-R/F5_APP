@@ -329,6 +329,23 @@ def compute_overall_with_trend(p: Player, trend: str) -> float:
         total += val * w[attr]
     return total
 
+def compute_combined_with_trend(p: Player, trend: str, db) -> float:
+    """Igual que compute_overall_with_trend pero usando atributos combinados con opiniones."""
+    admin_vals = admin_attr_vals(p)
+    combined = combined_attr_vals(db, p.id, admin_vals)
+    factor = STREAK_FACTORS.get(trend, 0.50)
+    w = GK_WEIGHTS if p.is_goalkeeper else FIELD_WEIGHTS
+    total = 0.0
+    for attr in ["shot", "passing", "defense", "vision", "stamina", "speed"]:
+        a_min = getattr(p, f"{attr}_min")
+        a_max = getattr(p, f"{attr}_max")
+        combined_val = combined.get(attr, (a_min + a_max) / 2)
+        # Escalar el valor combinado dentro del rango min-max según la racha
+        val = a_min + factor * (a_max - a_min)
+        # Promediar 50/50 entre el valor combinado y el ajuste por racha
+        total += ((combined_val + val) / 2) * w[attr]
+    return total
+
 def trends_snapshot(db, pids, lookback=3):
     matches = db.query(Match).filter(Match.is_recorded==True).order_by(Match.played_at.desc()).all()
     out = {}
@@ -489,7 +506,13 @@ def generate_teams(req: TeamGenRequest, db=Depends(get_session)):
                 total += _perf_score(pid, m); count += 1
                 if count >= 3: break
         return _trend(total)
-    ovrs = {p.id: compute_overall_with_trend(p, get_player_trend(p.id)) for p in players}
+    ovrs = {p.id: compute_combined_with_trend(p, get_player_trend(p.id), db) for p in players}
+    # Per-attribute combined values for balance penalty
+    ATTRS = ["shot", "passing", "defense", "vision", "stamina", "speed"]
+    attr_vals = {}
+    for p in players:
+        admin_v = admin_attr_vals(p)
+        attr_vals[p.id] = combined_attr_vals(db, p.id, admin_v)
     gk_ids = {p.id for p in players if p.is_goalkeeper}
     top = []  # list of (sort_key, data)
     for comb in itertools.combinations(ids, 5):
@@ -504,7 +527,13 @@ def generate_teams(req: TeamGenRequest, db=Depends(get_session)):
             imb = abs(len(ta_set & gk_ids) - len(tb_set & gk_ids))
             if imb: sa -= 5.0*imb; sb -= 5.0*imb
         diff = abs(sa-sb); syn_total = syn_a+syn_b
-        c = (diff, -syn_total, -(sk_a+sk_b))
+        # Per-attribute balance penalty: sum of |avg_A[attr] - avg_B[attr]|
+        attr_diff = sum(
+            abs(sum(attr_vals[i][a] for i in ta)/5 - sum(attr_vals[i][a] for i in tb)/5)
+            for a in ATTRS
+        )
+        ATTR_BALANCE_W = 0.4
+        c = (diff + ATTR_BALANCE_W * attr_diff, -syn_total, -(sk_a+sk_b))
         entry = (c, (ta, tb, diff, syn_total, sk_a, sk_b))
         if len(top) < 3:
             top.append(entry); top.sort(key=lambda x: x[0])
