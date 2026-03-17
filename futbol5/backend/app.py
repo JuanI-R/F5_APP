@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
-import itertools, json, os, hashlib
+import itertools, json, os, hashlib, math
 
 from dotenv import load_dotenv
 load_dotenv()  # carga .env si existe (desarrollo local; en Railway se usan env vars del panel)
