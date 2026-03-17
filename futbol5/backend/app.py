@@ -513,7 +513,6 @@ def generate_teams(req: TeamGenRequest, db=Depends(get_session)):
                 total += _perf_score(pid, m); count += 1
                 if count >= 3: break
         return _trend(total)
-    lsyn = req.lambda_syn if req.use_synergy else 0.0
     ovrs = {p.id: compute_combined_with_trend(p, get_player_trend(p.id), db) for p in players}
     # Per-attribute combined values for balance penalty
     ATTRS = ["shot", "passing", "defense", "vision", "stamina", "speed"]
@@ -525,23 +524,34 @@ def generate_teams(req: TeamGenRequest, db=Depends(get_session)):
     top = []  # list of (sort_key, data)
     for comb in itertools.combinations(ids, 5):
         ta = list(comb); tb = [x for x in ids if x not in set(comb)]
-        sa, syn_a, sk_a = team_score(db, ta, lsyn, ovrs)
-        sb, syn_b, sk_b = team_score(db, tb, lsyn, ovrs)
+        # Skill puro (sin sinergia) para el balance principal
+        _, syn_a, sk_a = team_score(db, ta, 0.0, ovrs)
+        _, syn_b, sk_b = team_score(db, tb, 0.0, ovrs)
         ta_set, tb_set = set(ta), set(tb)
-        if len(gk_ids) >= 1:
-            if not (ta_set & gk_ids): sa -= 25.0
-            if not (tb_set & gk_ids): sb -= 25.0
-        if len(gk_ids) >= 2:
-            imb = abs(len(ta_set & gk_ids) - len(tb_set & gk_ids))
-            if imb: sa -= 5.0*imb; sb -= 5.0*imb
-        diff = abs(sa-sb); syn_total = syn_a+syn_b
-        # Per-attribute balance penalty: sum of |avg_A[attr] - avg_B[attr]|
+        # GK balance: criterio primario absoluto
+        gk_a = len(ta_set & gk_ids)
+        gk_b = len(tb_set & gk_ids)
+        if len(gk_ids) == 0:
+            gk_penalty = 0
+        elif gk_a == 0 or gk_b == 0:
+            gk_penalty = 100   # ningún equipo puede quedar sin arquero
+        else:
+            gk_penalty = abs(gk_a - gk_b)   # preferir distribución pareja (1+1, 2+1...)
+        # Sinergia: solo si use_synergy está activo
+        syn_total = 0.0
+        if req.use_synergy:
+            syn_a = sum((pref_weight(db,a,b)+pref_weight(db,b,a))/2.0 for a,b in itertools.combinations(ta,2))
+            syn_b = sum((pref_weight(db,a,b)+pref_weight(db,b,a))/2.0 for a,b in itertools.combinations(tb,2))
+            syn_total = syn_a + syn_b
+        diff = abs(sk_a - sk_b)
+        # Per-attribute balance penalty
         attr_diff = sum(
             abs(sum(attr_vals[i][a] for i in ta)/5 - sum(attr_vals[i][a] for i in tb)/5)
             for a in ATTRS
         )
         ATTR_BALANCE_W = 0.4
-        c = (diff + ATTR_BALANCE_W * attr_diff, -syn_total, -(sk_a+sk_b))
+        # 1° GK balance, 2° OVR + atributos, 3° sinergia (desempate)
+        c = (gk_penalty, diff + ATTR_BALANCE_W * attr_diff, -syn_total, -(sk_a+sk_b))
         entry = (c, (ta, tb, diff, syn_total, sk_a, sk_b))
         if len(top) < 3:
             top.append(entry); top.sort(key=lambda x: x[0])
@@ -567,14 +577,18 @@ def predict_result(req: PredictRequest, db=Depends(get_session)):
                 if count >= 3: break
         return _trend(total)
     ovrs = {pid: compute_combined_with_trend(players[pid], get_trend(pid), db) for pid in all_ids if pid in players}
-    lsyn = req.lambda_syn if req.use_synergy else 0.0
-    score_a, syn_a, skill_a = team_score(db, req.team_a, lsyn, ovrs)
-    score_b, syn_b, skill_b = team_score(db, req.team_b, lsyn, ovrs)
-    total = score_a + score_b
-    prob_a = round(score_a / total * 100, 1) if total > 0 else 50.0
+    # Probabilidad basada en OVR puro (sin sinergia) para ser consistente con lo mostrado en pantalla
+    _, syn_a, skill_a = team_score(db, req.team_a, 0.0, ovrs)
+    _, syn_b, skill_b = team_score(db, req.team_b, 0.0, ovrs)
+    total = skill_a + skill_b
+    prob_a = round(skill_a / total * 100, 1) if total > 0 else 50.0
     prob_b = round(100 - prob_a, 1)
+    # Sinergia: solo informativa
+    if req.use_synergy:
+        syn_a = sum((pref_weight(db,a,b)+pref_weight(db,b,a))/2.0 for a,b in itertools.combinations(req.team_a,2))
+        syn_b = sum((pref_weight(db,a,b)+pref_weight(db,b,a))/2.0 for a,b in itertools.combinations(req.team_b,2))
     return PredictResponse(prob_a=prob_a, prob_b=prob_b,
-                           score_a=round(score_a,2), score_b=round(score_b,2),
+                           score_a=round(skill_a,2), score_b=round(skill_b,2),
                            syn_a=round(syn_a,2), syn_b=round(syn_b,2),
                            skill_a=round(skill_a,2), skill_b=round(skill_b,2))
 
