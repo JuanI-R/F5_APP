@@ -231,12 +231,19 @@ class MatchResultIn(BaseModel):
     played_at: datetime | None = None
 
 class TeamGenRequest(BaseModel):
-    player_ids: List[int]; lambda_syn: float = 10.0
+    player_ids: List[int]; lambda_syn: float = 10.0; use_synergy: bool = True
 
 class TeamGenResponse(BaseModel):
     team_a: List[int]; team_b: List[int]
     score_diff: float; syn_sum: float; skill_sum_a: float; skill_sum_b: float
     option_num: int = 1
+
+class PredictRequest(BaseModel):
+    team_a: List[int]; team_b: List[int]; lambda_syn: float = 10.0; use_synergy: bool = True
+
+class PredictResponse(BaseModel):
+    prob_a: float; prob_b: float; score_a: float; score_b: float
+    syn_a: float; syn_b: float; skill_a: float; skill_b: float
 
 class PlayerTrendOut(BaseModel):
     player_id: int; trend: Literal["up2","up1","flat","down1","down2"]; score: int
@@ -506,6 +513,7 @@ def generate_teams(req: TeamGenRequest, db=Depends(get_session)):
                 total += _perf_score(pid, m); count += 1
                 if count >= 3: break
         return _trend(total)
+    lsyn = req.lambda_syn if req.use_synergy else 0.0
     ovrs = {p.id: compute_combined_with_trend(p, get_player_trend(p.id), db) for p in players}
     # Per-attribute combined values for balance penalty
     ATTRS = ["shot", "passing", "defense", "vision", "stamina", "speed"]
@@ -517,8 +525,8 @@ def generate_teams(req: TeamGenRequest, db=Depends(get_session)):
     top = []  # list of (sort_key, data)
     for comb in itertools.combinations(ids, 5):
         ta = list(comb); tb = [x for x in ids if x not in set(comb)]
-        sa, syn_a, sk_a = team_score(db, ta, req.lambda_syn, ovrs)
-        sb, syn_b, sk_b = team_score(db, tb, req.lambda_syn, ovrs)
+        sa, syn_a, sk_a = team_score(db, ta, lsyn, ovrs)
+        sb, syn_b, sk_b = team_score(db, tb, lsyn, ovrs)
         ta_set, tb_set = set(ta), set(tb)
         if len(gk_ids) >= 1:
             if not (ta_set & gk_ids): sa -= 25.0
@@ -545,6 +553,30 @@ def generate_teams(req: TeamGenRequest, db=Depends(get_session)):
                         skill_sum_a=sk_a, skill_sum_b=sk_b, option_num=i+1)
         for i, (_, (ta, tb, diff, syn_sum, sk_a, sk_b)) in enumerate(top)
     ]
+
+@app.post("/predict_result", response_model=PredictResponse)
+def predict_result(req: PredictRequest, db=Depends(get_session)):
+    all_ids = list(set(req.team_a + req.team_b))
+    players = {p.id: p for p in db.query(Player).filter(Player.id.in_(all_ids)).all()}
+    recorded = db.query(Match).filter(Match.is_recorded==True).order_by(Match.played_at.desc()).all()
+    def get_trend(pid):
+        total, count = 0, 0
+        for m in recorded:
+            if _in_match(pid, m):
+                total += _perf_score(pid, m); count += 1
+                if count >= 3: break
+        return _trend(total)
+    ovrs = {pid: compute_combined_with_trend(players[pid], get_trend(pid), db) for pid in all_ids if pid in players}
+    lsyn = req.lambda_syn if req.use_synergy else 0.0
+    score_a, syn_a, skill_a = team_score(db, req.team_a, lsyn, ovrs)
+    score_b, syn_b, skill_b = team_score(db, req.team_b, lsyn, ovrs)
+    total = score_a + score_b
+    prob_a = round(score_a / total * 100, 1) if total > 0 else 50.0
+    prob_b = round(100 - prob_a, 1)
+    return PredictResponse(prob_a=prob_a, prob_b=prob_b,
+                           score_a=round(score_a,2), score_b=round(score_b,2),
+                           syn_a=round(syn_a,2), syn_b=round(syn_b,2),
+                           skill_a=round(skill_a,2), skill_b=round(skill_b,2))
 
 # ---- ROUTES: MATCHES ----
 @app.post("/matches", response_model=MatchOut)
