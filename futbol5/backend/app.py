@@ -691,10 +691,12 @@ def player_ping(pid: int, db=Depends(get_session)):
 def admin_participation(db=Depends(get_session)):
     players = db.query(Player).order_by(Player.name).all()
     opinions = db.query(Opinion).all()
-    # Opinions use actor_user_id = player.id (players act as users in this app)
-    op_map = {}  # (actor_id, target_id) -> True
+    # actor_user_id is a user.id, not a player.id — build a lookup to translate
+    user_to_player = {u.id: u.player_id for u in db.query(User).filter(User.player_id != None).all()}
+    op_map = {}  # (actor_player_id, target_player_id) -> True
     for o in opinions:
-        op_map[(o.actor_user_id, o.target_player_id)] = True
+        actor_pid = user_to_player.get(o.actor_user_id, o.actor_user_id)
+        op_map[(actor_pid, o.target_player_id)] = True
     result = []
     for p in players:
         others = [x for x in players if x.id != p.id]
