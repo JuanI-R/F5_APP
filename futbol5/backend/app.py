@@ -505,13 +505,9 @@ def generate_teams(req: TeamGenRequest, db=Depends(get_session)):
     if len(ids) != 10: raise HTTPException(400, "Debes enviar exactamente 10 jugadores")
     players = db.query(Player).filter(Player.id.in_(ids)).all()
     if len(players) != 10: raise HTTPException(400, "IDs inválidos")
-    recorded_matches = db.query(Match).filter(Match.is_recorded==True).order_by(Match.played_at.desc()).all()
+    recent_matches = db.query(Match).filter(Match.is_recorded==True).order_by(Match.played_at.desc()).limit(4).all()
     def get_player_trend(pid):
-        total, count = 0, 0
-        for m in recorded_matches:
-            if _in_match(pid, m):
-                total += _perf_score(pid, m); count += 1
-                if count >= 3: break
+        total = sum(_perf_score(pid, m) for m in recent_matches if _in_match(pid, m))
         return _trend(total)
     ovrs = {p.id: compute_combined_with_trend(p, get_player_trend(p.id), db) for p in players}
     # Pre-cargar atributos y preferencias para evitar queries dentro del loop
@@ -717,16 +713,12 @@ def admin_participation(db=Depends(get_session)):
     return result
 
 @app.get("/players/trends", response_model=List[PlayerTrendOut])
-def players_trends(lookback: int=3, db=Depends(get_session)):
+def players_trends(lookback: int=4, db=Depends(get_session)):
     players = db.query(Player).all()
-    matches = db.query(Match).filter(Match.is_recorded==True).order_by(Match.played_at.desc()).all()
+    matches = db.query(Match).filter(Match.is_recorded==True).order_by(Match.played_at.desc()).limit(lookback).all()
     out = []
     for p in players:
-        total, count = 0, 0
-        for m in matches:
-            if _in_match(p.id, m):
-                total += _perf_score(p.id, m); count += 1
-                if count >= lookback: break
+        total = sum(_perf_score(p.id, m) for m in matches if _in_match(p.id, m))
         out.append(PlayerTrendOut(player_id=p.id, trend=_trend(total), score=total))
     return out
 
