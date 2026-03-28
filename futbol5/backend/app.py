@@ -548,7 +548,6 @@ def generate_teams(req: TeamGenRequest, db=Depends(get_session)):
         total = sum(_perf_score(pid, m) for m in recent_matches if _in_match(pid, m))
         return _trend(total)
     ovrs = {p.id: compute_combined_with_trend(p, get_player_trend(p.id), db) for p in players}
-    # Pre-cargar atributos y preferencias para evitar queries dentro del loop
     ATTRS = ["shot", "passing", "defense", "vision", "stamina", "speed"]
     attr_vals = {}
     for p in players:
@@ -564,12 +563,16 @@ def generate_teams(req: TeamGenRequest, db=Depends(get_session)):
     def syn_pair(a, b):
         return (prefs.get((a, b), 0) + prefs.get((b, a), 0)) / 2.0
     gk_ids = {p.id for p in players if p.is_goalkeeper}
-    top = []  # list of (sort_key, data)
+    min_id = min(ids)
+    top = []
     for comb in itertools.combinations(ids, 5):
+        # Deduplicar: cada partición {ta,tb} aparece dos veces en combinations.
+        # Solo procesamos la que contiene el ID más bajo en ta.
+        if min_id not in set(comb): continue
         ta = list(comb); tb = [x for x in ids if x not in set(comb)]
+        ta_set, tb_set = set(ta), set(tb)
         sk_a = sum(ovrs[i] for i in ta)
         sk_b = sum(ovrs[i] for i in tb)
-        ta_set, tb_set = set(ta), set(tb)
         # GK balance: criterio primario absoluto
         gk_a = len(ta_set & gk_ids)
         gk_b = len(tb_set & gk_ids)
@@ -579,23 +582,25 @@ def generate_teams(req: TeamGenRequest, db=Depends(get_session)):
             gk_penalty = 100
         else:
             gk_penalty = abs(gk_a - gk_b)
-        # Sinergia como desempate (sin queries)
-        syn_total = 0.0
+        # Sinergia por equipo (afecta el score total, no solo desempata)
+        syn_a_val = 0.0; syn_b_val = 0.0
         if req.use_synergy:
-            syn_total = (
-                sum(syn_pair(a, b) for a, b in itertools.combinations(ta, 2)) +
-                sum(syn_pair(a, b) for a, b in itertools.combinations(tb, 2))
-            )
-        diff = abs(sk_a - sk_b)
+            syn_a_val = sum(syn_pair(a, b) for a, b in itertools.combinations(ta, 2))
+            syn_b_val = sum(syn_pair(a, b) for a, b in itertools.combinations(tb, 2))
+        syn_total = syn_a_val + syn_b_val
+        # Score total por equipo = habilidad + sinergia ponderada
+        sc_a = sk_a + req.lambda_syn * syn_a_val
+        sc_b = sk_b + req.lambda_syn * syn_b_val
+        diff = abs(sc_a - sc_b)
         # Per-attribute balance penalty
         attr_diff = sum(
             abs(sum(attr_vals[i][a] for i in ta)/5 - sum(attr_vals[i][a] for i in tb)/5)
             for a in ATTRS
         )
         ATTR_BALANCE_W = 0.4
-        # 1° GK balance, 2° OVR + atributos, 3° sinergia (desempate)
-        c = (gk_penalty, diff + ATTR_BALANCE_W * attr_diff, -syn_total, -(sk_a+sk_b))
-        entry = (c, (ta, tb, diff, syn_total, sk_a, sk_b))
+        # 1° GK balance, 2° diferencia total (skill+sinergia) + balance por atributo
+        c = (gk_penalty, diff + ATTR_BALANCE_W * attr_diff, -(sk_a + sk_b))
+        entry = (c, (ta, tb, round(diff, 2), round(syn_total, 2), round(sk_a, 2), round(sk_b, 2)))
         if len(top) < 3:
             top.append(entry); top.sort(key=lambda x: x[0])
         elif c < top[-1][0]:
@@ -620,16 +625,12 @@ def predict_result(req: PredictRequest, db=Depends(get_session)):
                 if count >= 3: break
         return _trend(total)
     ovrs = {pid: compute_combined_with_trend(players[pid], get_trend(pid), db) for pid in all_ids if pid in players}
-    # Probabilidad basada en OVR puro (sin sinergia) para ser consistente con lo mostrado en pantalla
-    _, syn_a, skill_a = team_score(db, req.team_a, 0.0, ovrs)
-    _, syn_b, skill_b = team_score(db, req.team_b, 0.0, ovrs)
-    total = skill_a + skill_b
-    prob_a = round(skill_a / total * 100, 1) if total > 0 else 50.0
+    lsyn = req.lambda_syn if req.use_synergy else 0.0
+    total_a, syn_a, skill_a = team_score(db, req.team_a, lsyn, ovrs)
+    total_b, syn_b, skill_b = team_score(db, req.team_b, lsyn, ovrs)
+    total = total_a + total_b
+    prob_a = round(total_a / total * 100, 1) if total > 0 else 50.0
     prob_b = round(100 - prob_a, 1)
-    # Sinergia: solo informativa
-    if req.use_synergy:
-        syn_a = sum((pref_weight(db,a,b)+pref_weight(db,b,a))/2.0 for a,b in itertools.combinations(req.team_a,2))
-        syn_b = sum((pref_weight(db,a,b)+pref_weight(db,b,a))/2.0 for a,b in itertools.combinations(req.team_b,2))
     return PredictResponse(prob_a=prob_a, prob_b=prob_b,
                            score_a=round(skill_a,2), score_b=round(skill_b,2),
                            syn_a=round(syn_a,2), syn_b=round(syn_b,2),
