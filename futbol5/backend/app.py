@@ -350,19 +350,21 @@ def compute_overall_with_trend(p: Player, trend: str) -> float:
     return total
 
 def compute_combined_with_trend(p: Player, trend: str, db) -> float:
-    """Igual que compute_overall_with_trend pero usando atributos combinados con opiniones."""
+    """OVR basado 100% en opiniones. El admin no aporta ningún valor implícito:
+    si existen opiniones, el rango (min/max) y el promedio se derivan de ellas;
+    los atributos almacenados en el jugador solo sirven de fallback neutral cuando
+    no hay ninguna opinión registrada."""
     admin_vals = admin_attr_vals(p)
     combined = combined_attr_vals(db, p.id, admin_vals)
+    op_min, op_max = combined_attr_minmax(db, p.id, p)   # rango de opiniones (o stored como fallback)
     factor = STREAK_FACTORS.get(trend, 0.50)
     w = GK_WEIGHTS if p.is_goalkeeper else FIELD_WEIGHTS
     total = 0.0
     for attr in ["shot", "passing", "defense", "vision", "stamina", "speed"]:
-        a_min = getattr(p, f"{attr}_min")
-        a_max = getattr(p, f"{attr}_max")
-        combined_val = combined.get(attr, (a_min + a_max) / 2)
-        # Escalar el valor combinado dentro del rango min-max según la racha
-        val = a_min + factor * (a_max - a_min)
-        # Promediar 50/50 entre el valor combinado y el ajuste por racha
+        r_min = op_min[attr]
+        r_max = op_max[attr]
+        combined_val = combined.get(attr, (r_min + r_max) / 2)
+        val = r_min + factor * (r_max - r_min)
         total += ((combined_val + val) / 2) * w[attr]
     return total
 
