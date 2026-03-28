@@ -147,6 +147,17 @@ def overall_from_vals(vals, is_gk):
 def admin_attr_vals(p: Player):
     return {k: (getattr(p,f"{k}_min")+getattr(p,f"{k}_max"))/2 for k in ["shot","passing","defense","vision","stamina","speed"]}
 
+def combined_attr_minmax(db, pid, p: Player):
+    """Returns (avg_min, avg_max) dicts from all opinions. Falls back to admin raw min/max if none."""
+    ops = db.query(Opinion).filter(Opinion.target_player_id==pid).all()
+    attrs = ["shot","passing","defense","vision","stamina","speed"]
+    if not ops:
+        return ({a: getattr(p, f"{a}_min") for a in attrs},
+                {a: getattr(p, f"{a}_max") for a in attrs})
+    n = len(ops)
+    return ({a: sum(getattr(o, f"{a}_min") for o in ops)/n for a in attrs},
+            {a: sum(getattr(o, f"{a}_max") for o in ops)/n for a in attrs})
+
 def combined_attr_vals(db, pid, admin_vals):
     """Promedia TODAS las opiniones por igual (incluyendo la del admin si la cargó).
     Si no hay ninguna opinión registrada, devuelve los valores base del jugador."""
@@ -182,6 +193,8 @@ class PlayerWithOpinionsOut(BaseModel):
     id: int; name: str; is_goalkeeper: bool; regularity: float
     admin: Dict[str,float]; combined: Dict[str,float]
     overall_admin: float; overall_combined: float
+    attr_min: Dict[str,float]; attr_max: Dict[str,float]
+    combined_min: Dict[str,float]; combined_max: Dict[str,float]
     class Config: orm_mode = True
 
 class PreferenceIn(BaseModel):
@@ -406,12 +419,17 @@ def get_players(db=Depends(get_session)):
 @app.get("/players/with_opinions", response_model=List[PlayerWithOpinionsOut])
 def get_players_with_opinions(db=Depends(get_session)):
     out = []
+    attrs = ["shot","passing","defense","vision","stamina","speed"]
     for p in db.query(Player).order_by(Player.name).all():
         av = admin_attr_vals(p); cv = combined_attr_vals(db, p.id, av)
+        c_min, c_max = combined_attr_minmax(db, p.id, p)
+        a_min = {a: getattr(p, f"{a}_min") for a in attrs}
+        a_max = {a: getattr(p, f"{a}_max") for a in attrs}
         out.append(PlayerWithOpinionsOut(id=p.id, name=p.name, is_goalkeeper=p.is_goalkeeper,
             regularity=p.regularity, admin=av, combined=cv,
             overall_admin=overall_from_vals(av, p.is_goalkeeper),
-            overall_combined=overall_from_vals(cv, p.is_goalkeeper)))
+            overall_combined=overall_from_vals(cv, p.is_goalkeeper),
+            attr_min=a_min, attr_max=a_max, combined_min=c_min, combined_max=c_max))
     return out
 
 @app.post("/players", response_model=PlayerOut)
