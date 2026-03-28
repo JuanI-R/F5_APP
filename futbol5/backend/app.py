@@ -114,6 +114,24 @@ def _run_migrations():
                 conn.rollback()
 _run_migrations()
 
+# ---- MIGRATE: visión como valor único ----
+def _migrate_vision_single():
+    """Normaliza vision_min = vision_max = promedio para jugadores y opiniones existentes."""
+    sql_avg = __import__('sqlalchemy').text
+    for table in ("players", "opinions"):
+        with engine.connect() as conn:
+            try:
+                conn.execute(sql_avg(
+                    f"UPDATE {table} "
+                    f"SET vision_min = (vision_min + vision_max) / 2.0, "
+                    f"    vision_max = (vision_min + vision_max) / 2.0 "
+                    f"WHERE vision_min != vision_max"
+                ))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+_migrate_vision_single()
+
 # ---- INIT SEQUENCE ----
 # Asegura que la secuencia de IDs de jugadores registre el máximo actual
 def _init_player_sequence():
@@ -130,8 +148,8 @@ def _init_player_sequence():
 _init_player_sequence()
 
 # ---- WEIGHTS ----
-FIELD_WEIGHTS = {"shot":1.2,"passing":1.0,"defense":1.1,"vision":1.0,"stamina":0.9,"speed":0.9}
-GK_WEIGHTS    = {"shot":0.4,"passing":0.9,"defense":1.4,"vision":1.0,"stamina":1.0,"speed":0.8}
+FIELD_WEIGHTS = {"shot":0.9,"passing":1.0,"defense":0.9,"vision":2.5,"stamina":0.7,"speed":0.6}
+GK_WEIGHTS    = FIELD_WEIGHTS  # En F5 el arquero juega como un jugador más
 
 def compute_overall(p: Player) -> float:
     w = GK_WEIGHTS if p.is_goalkeeper else FIELD_WEIGHTS
