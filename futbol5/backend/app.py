@@ -277,7 +277,9 @@ class PredictResponse(BaseModel):
     syn_a: float; syn_b: float; skill_a: float; skill_b: float
 
 class PlayerTrendOut(BaseModel):
-    player_id: int; trend: Literal["up2","up1","flat","down1","down2"]; score: int
+    player_id: int
+    trend: Literal["up2","up1","flat","down1","down2"]; score: int
+    long_trend: Literal["up2","up1","flat","down1","down2"]; long_score: int
 
 class PlayerSeasonStat(BaseModel):
     player_id: int; name: str; gp: int; wins: int; losses: int; draws: int
@@ -325,26 +327,29 @@ def _perf_score(pid, m):
     rw = csv_split(m.rank_winners) or []
     rl = csv_split(m.rank_losers) or []
 
-    # Rankeado como ganador
     if pid in rw:
         pos = rw.index(pid) + 1
-        return 2 if pos <= 2 else 1
+        if pos == 1: return 3
+        if pos == 2: return 2
+        return 1  # pos 3+
 
-    # Rankeado como perdedor
     if pid in rl:
-        pos = rl.index(pid) + 1
-        return 0 if pos == 1 else -1
+        pos  = rl.index(pid) + 1
+        n    = len(rl)
+        # Último del equipo perdedor cuando se rankean todos (4 o 5 posiciones)
+        if pos == n and n >= 4: return -3
+        if pos == 1: return 0
+        if pos <= 3: return -1
+        return -2  # pos 4 sin ser el último registrado
 
-    # No rankeado: distinguir si ganó o perdió
+    # No rankeado
     if m.winner_team in ("A", "B"):
         win_ids  = csv_split(m.team_a) if m.winner_team == "A" else csv_split(m.team_b)
         lose_ids = csv_split(m.team_b) if m.winner_team == "A" else csv_split(m.team_a)
-        if pid in (win_ids or []):
-            return 0   # Ganó pero sin destacarse
-        if pid in (lose_ids or []):
-            return -2  # Perdió y no fue destacado (los 2 peores)
+        if pid in (win_ids or []):  return 0
+        if pid in (lose_ids or []): return -2
 
-    return 0  # Empate o no jugó
+    return 0
 
 def _in_match(pid, m):
     return pid in (csv_split(m.team_a) or []) + (csv_split(m.team_b) or [])
@@ -356,7 +361,16 @@ def _trend(total):
     if total >= -5: return "down1"
     return "down2"
 
-STREAK_FACTORS = {"up2": 0.95, "up1": 0.70, "flat": 0.50, "down1": 0.30, "down2": 0.05}
+def _long_trend(total):
+    """Tendencia global basada en últimos 8 partidos (umbral ~doble del short-term)."""
+    if total >= 10: return "up2"
+    if total >= 6:  return "up1"
+    if total >= -4: return "flat"
+    if total >= -10: return "down1"
+    return "down2"
+
+STREAK_FACTORS   = {"up2": 0.95, "up1": 0.70, "flat": 0.50, "down1": 0.30, "down2": 0.05}
+LONG_TREND_DELTA = {"up2": +0.15, "up1": +0.08, "flat": 0.0, "down1": -0.08, "down2": -0.15}
 
 def compute_overall_with_trend(p: Player, trend: str) -> float:
     factor = STREAK_FACTORS.get(trend, 0.50)
@@ -367,15 +381,16 @@ def compute_overall_with_trend(p: Player, trend: str) -> float:
         total += val * w[attr]
     return total
 
-def compute_combined_with_trend(p: Player, trend: str, db) -> float:
-    """OVR basado 100% en opiniones. El admin no aporta ningún valor implícito:
-    si existen opiniones, el rango (min/max) y el promedio se derivan de ellas;
-    los atributos almacenados en el jugador solo sirven de fallback neutral cuando
-    no hay ninguna opinión registrada."""
+def compute_combined_with_trend(p: Player, trend: str, db, long_trend: str = "flat") -> float:
+    """OVR basado 100% en opiniones.
+    El factor efectivo combina la racha corta (últimos 4 partidos) con la tendencia
+    global (últimos 8 partidos) para posicionar al jugador dentro de su rango."""
     admin_vals = admin_attr_vals(p)
     combined = combined_attr_vals(db, p.id, admin_vals)
-    op_min, op_max = combined_attr_minmax(db, p.id, p)   # rango de opiniones (o stored como fallback)
-    factor = STREAK_FACTORS.get(trend, 0.50)
+    op_min, op_max = combined_attr_minmax(db, p.id, p)
+    short_factor = STREAK_FACTORS.get(trend, 0.50)
+    long_delta    = LONG_TREND_DELTA.get(long_trend, 0.0)
+    factor = max(0.0, min(1.0, short_factor + long_delta))
     w = GK_WEIGHTS if p.is_goalkeeper else FIELD_WEIGHTS
     total = 0.0
     for attr in ["shot", "passing", "defense", "vision", "stamina", "speed"]:
@@ -386,16 +401,23 @@ def compute_combined_with_trend(p: Player, trend: str, db) -> float:
         total += ((combined_val + val) / 2) * w[attr]
     return total
 
-def trends_snapshot(db, pids, lookback=3):
+def trends_snapshot(db, pids, lookback=4, long_lookback=8):
     matches = db.query(Match).filter(Match.is_recorded==True).order_by(Match.played_at.desc()).all()
     out = {}
     for pid in pids:
         total, count = 0, 0
+        long_total, long_count = 0, 0
         for m in matches:
             if _in_match(pid, m):
-                total += _perf_score(pid, m); count += 1
-                if count >= lookback: break
-        out[pid] = {"trend": _trend(total), "score": total}
+                score = _perf_score(pid, m)
+                if count < lookback:
+                    total += score; count += 1
+                if long_count < long_lookback:
+                    long_total += score; long_count += 1
+                if count >= lookback and long_count >= long_lookback:
+                    break
+        out[pid] = {"trend": _trend(total), "score": total,
+                    "long_trend": _long_trend(long_total), "long_score": long_total}
     return out
 
 def hash_password(password: str) -> str:
@@ -543,11 +565,17 @@ def generate_teams(req: TeamGenRequest, db=Depends(get_session)):
     if len(ids) != 10: raise HTTPException(400, "Debes enviar exactamente 10 jugadores")
     players = db.query(Player).filter(Player.id.in_(ids)).all()
     if len(players) != 10: raise HTTPException(400, "IDs inválidos")
-    recent_matches = db.query(Match).filter(Match.is_recorded==True).order_by(Match.played_at.desc()).limit(4).all()
-    def get_player_trend(pid):
-        total = sum(_perf_score(pid, m) for m in recent_matches if _in_match(pid, m))
-        return _trend(total)
-    ovrs = {p.id: compute_combined_with_trend(p, get_player_trend(p.id), db) for p in players}
+    all_recent = db.query(Match).filter(Match.is_recorded==True).order_by(Match.played_at.desc()).all()
+    def get_player_trends(pid):
+        total, count, long_total, long_count = 0, 0, 0, 0
+        for m in all_recent:
+            if _in_match(pid, m):
+                score = _perf_score(pid, m)
+                if count < 4: total += score; count += 1
+                if long_count < 8: long_total += score; long_count += 1
+                if count >= 4 and long_count >= 8: break
+        return _trend(total), _long_trend(long_total)
+    ovrs = {p.id: compute_combined_with_trend(p, *get_player_trends(p.id), db) for p in players}
     ATTRS = ["shot", "passing", "defense", "vision", "stamina", "speed"]
     attr_vals = {}
     for p in players:
@@ -617,14 +645,16 @@ def predict_result(req: PredictRequest, db=Depends(get_session)):
     all_ids = list(set(req.team_a + req.team_b))
     players = {p.id: p for p in db.query(Player).filter(Player.id.in_(all_ids)).all()}
     recorded = db.query(Match).filter(Match.is_recorded==True).order_by(Match.played_at.desc()).all()
-    def get_trend(pid):
-        total, count = 0, 0
+    def get_trends(pid):
+        total, count, long_total, long_count = 0, 0, 0, 0
         for m in recorded:
             if _in_match(pid, m):
-                total += _perf_score(pid, m); count += 1
-                if count >= 3: break
-        return _trend(total)
-    ovrs = {pid: compute_combined_with_trend(players[pid], get_trend(pid), db) for pid in all_ids if pid in players}
+                score = _perf_score(pid, m)
+                if count < 4: total += score; count += 1
+                if long_count < 8: long_total += score; long_count += 1
+                if count >= 4 and long_count >= 8: break
+        return _trend(total), _long_trend(long_total)
+    ovrs = {pid: compute_combined_with_trend(players[pid], *get_trends(pid), db) for pid in all_ids if pid in players}
     lsyn = req.lambda_syn if req.use_synergy else 0.0
     total_a, syn_a, skill_a = team_score(db, req.team_a, lsyn, ovrs)
     total_b, syn_b, skill_b = team_score(db, req.team_b, lsyn, ovrs)
@@ -754,11 +784,22 @@ def admin_participation(db=Depends(get_session)):
 @app.get("/players/trends", response_model=List[PlayerTrendOut])
 def players_trends(lookback: int=4, db=Depends(get_session)):
     players = db.query(Player).all()
-    matches = db.query(Match).filter(Match.is_recorded==True).order_by(Match.played_at.desc()).limit(lookback).all()
+    all_matches = db.query(Match).filter(Match.is_recorded==True).order_by(Match.played_at.desc()).all()
     out = []
     for p in players:
-        total = sum(_perf_score(p.id, m) for m in matches if _in_match(p.id, m))
-        out.append(PlayerTrendOut(player_id=p.id, trend=_trend(total), score=total))
+        total, count = 0, 0
+        long_total, long_count = 0, 0
+        for m in all_matches:
+            if _in_match(p.id, m):
+                score = _perf_score(p.id, m)
+                if count < lookback:
+                    total += score; count += 1
+                if long_count < 8:
+                    long_total += score; long_count += 1
+                if count >= lookback and long_count >= 8:
+                    break
+        out.append(PlayerTrendOut(player_id=p.id, trend=_trend(total), score=total,
+                                  long_trend=_long_trend(long_total), long_score=long_total))
     return out
 
 @app.get("/stats/season", response_model=List[PlayerSeasonStat])
