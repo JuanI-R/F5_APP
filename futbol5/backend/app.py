@@ -385,20 +385,16 @@ def compute_combined_with_trend(p: Player, trend: str, db, long_trend: str = "fl
     """OVR basado 100% en opiniones.
     El factor efectivo combina la racha corta (últimos 4 partidos) con la tendencia
     global (últimos 8 partidos) para posicionar al jugador dentro de su rango."""
-    admin_vals = admin_attr_vals(p)
-    combined = combined_attr_vals(db, p.id, admin_vals)
     op_min, op_max = combined_attr_minmax(db, p.id, p)
     short_factor = STREAK_FACTORS.get(trend, 0.50)
     long_delta    = LONG_TREND_DELTA.get(long_trend, 0.0)
-    factor = max(0.0, min(1.0, short_factor + long_delta))
+    factor = short_factor + long_delta  # puede salir del [0,1]: -0.10 a 1.10
     w = GK_WEIGHTS if p.is_goalkeeper else FIELD_WEIGHTS
     total = 0.0
     for attr in ["shot", "passing", "defense", "vision", "stamina", "speed"]:
         r_min = op_min[attr]
         r_max = op_max[attr]
-        combined_val = combined.get(attr, (r_min + r_max) / 2)
-        val = r_min + factor * (r_max - r_min)
-        total += ((combined_val + val) / 2) * w[attr]
+        total += (r_min + factor * (r_max - r_min)) * w[attr]
     return total
 
 def trends_snapshot(db, pids, lookback=4, long_lookback=8):
