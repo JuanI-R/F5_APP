@@ -148,7 +148,7 @@ def _init_player_sequence():
 _init_player_sequence()
 
 # ---- WEIGHTS ----
-FIELD_WEIGHTS = {"shot":0.9,"passing":1.0,"defense":0.9,"vision":2.5,"stamina":0.7,"speed":0.6}
+FIELD_WEIGHTS = {"shot":0.9,"passing":1.0,"defense":1.0,"vision":1.5,"stamina":0.8,"speed":0.6}
 GK_WEIGHTS    = FIELD_WEIGHTS  # En F5 el arquero juega como un jugador más
 
 def compute_overall(p: Player) -> float:
