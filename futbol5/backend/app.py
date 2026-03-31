@@ -381,7 +381,7 @@ def compute_overall_with_trend(p: Player, trend: str) -> float:
         total += val * w[attr]
     return total
 
-def compute_combined_with_trend(p: Player, trend: str, db, long_trend: str = "flat") -> float:
+def compute_combined_with_trend(p: Player, trend: str, long_trend: str, db) -> float:
     """OVR basado 100% en opiniones.
     El factor efectivo combina la racha corta (últimos 4 partidos) con la tendencia
     global (últimos 8 partidos) para posicionar al jugador dentro de su rango."""
