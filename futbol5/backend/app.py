@@ -320,7 +320,7 @@ def clamp(v): return float(max(1.0, min(10.0, v)))
 
 def next_thursday():
     dt = datetime.utcnow()
-    days_ahead = (3 - dt.weekday()) % 7 or 7
+    days_ahead = (3 - dt.weekday()) % 7
     return (dt + timedelta(days=days_ahead)).replace(hour=21,minute=0,second=0,microsecond=0)
 
 def _perf_score(pid, m):
