@@ -405,7 +405,7 @@
 // =========================================================
 //  CONFIG
 // =========================================================
-const BACKEND_URL = 'https://f5app-production-cff4.up.railway.app';
+const BACKEND_URL = 'https://f5-app.onrender.com';
 
 const API = (() => {
   const stored = localStorage.getItem('apiUrl');
@@ -489,11 +489,63 @@ function mkRangeDouble(minVal, maxVal, lblEl, onChange) {
   return wrap;
 }
 
-function ovr(p) { return p.overall_expected?.toFixed(1) || '—'; }
+// Slider simple para visión (valor único — sin fill, solo marcador puntual)
+function mkRangeSingle(val, lblEl, onChange) {
+  const MIN = 1, MAX = 10;
+  const wrap = h('div', { class:'range-double' });
+  const track = h('div', { class:'rd-track' });
+  // Sin fill; solo un dot que indica la posición exacta
+  const dot = h('div', { style:'position:absolute;top:50%;transform:translate(-50%,-50%);width:10px;height:10px;border-radius:50%;background:var(--green);pointer-events:none;transition:left .1s' });
+  track.appendChild(dot);
+  wrap.appendChild(track);
+  const inp = h('input', { type:'range', min:MIN, max:MAX, step:0.5, value:val });
+  const update = () => {
+    const v = parseFloat(inp.value);
+    const pct = (v - MIN) / (MAX - MIN) * 100;
+    dot.style.left = pct + '%';
+    if (lblEl) lblEl.textContent = String(v);
+    onChange?.(v);
+  };
+  inp.oninput = update;
+  wrap.appendChild(inp);
+  update();
+  return wrap;
+}
+
+function ovr(p) { return (p.overall_combined ?? p.overall_expected)?.toFixed(1) || '—'; }
 
 const TREND_LABEL = { up2:'▲▲ En racha', up1:'▲ Bien', flat:'— Regular', down1:'▼ Bajo', down2:'▼▼ Mal momento' };
 const TREND_CLS   = { up2:'badge-up', up1:'badge-up', flat:'badge-flat', down1:'badge-down', down2:'badge-down' };
 const TREND_ICON  = { up2:'▲▲', up1:'▲', flat:'—', down1:'▼', down2:'▼▼' };
+const STREAK_FACTORS   = { up2:0.95, up1:0.70, flat:0.50, down1:0.30, down2:0.05 };
+const LONG_TREND_DELTA = { up2:+0.15, up1:+0.08, flat:0.0, down1:-0.08, down2:-0.15 };
+const LONG_TREND_LABEL = { up2:'▲▲', up1:'▲', flat:'—', down1:'▼', down2:'▼▼' };
+const FIELD_W = { shot:0.9, passing:1.0, defense:1.0, vision:1.5, stamina:0.8, speed:0.6 };
+const GK_W    = FIELD_W;  // En F5 el arquero juega como un jugador más
+
+function blendedFactor(trend, long_trend) {
+  const sf = STREAK_FACTORS[trend] ?? 0.50;
+  const ld = LONG_TREND_DELTA[long_trend] ?? 0.0;
+  return sf + ld;  // puede salir del [0,1]: -0.10 a 1.10
+}
+
+function ovrWithTrend(p, trend, long_trend = 'flat') {
+  const factor = blendedFactor(trend, long_trend);
+  const w = p.is_goalkeeper ? GK_W : FIELD_W;
+  let total = 0;
+  for (const a of ['shot','passing','defense','vision','stamina','speed']) {
+    const rMin = p.combined_min?.[a] ?? p.attr_min?.[a] ?? 4;
+    const rMax = p.combined_max?.[a] ?? p.attr_max?.[a] ?? 6;
+    total += (rMin + factor * (rMax - rMin)) * w[a];
+  }
+  return total;
+}
+
+function attrEffective(p, a, factor) {
+  const rMin = p.combined_min?.[a] ?? p.attr_min?.[a] ?? 4;
+  const rMax = p.combined_max?.[a] ?? p.attr_max?.[a] ?? 6;
+  return rMin + factor * (rMax - rMin);
+}
 
 function trendBadge(pid) {
   const t = state.trends[pid];
@@ -515,11 +567,22 @@ function nameById(id) {
 // =========================================================
 async function loadAll() {
   try {
-    const [players, trends] = await Promise.all([
+    const [players, withOp, trends] = await Promise.all([
       api('/players'),
-      api('/players/trends?lookback=3').catch(() => []),
+      api('/players/with_opinions').catch(() => []),
+      api('/players/trends?lookback=4').catch(() => []),
     ]);
-    state.players = players;
+    // Mergear datos de opiniones en cada jugador
+    const opMap = Object.fromEntries(withOp.map(p => [p.id, p]));
+    state.players = players.map(p => ({
+      ...p,
+      overall_combined: opMap[p.id]?.overall_combined ?? p.overall_expected,
+      combined:      opMap[p.id]?.combined      ?? {},
+      combined_min:  opMap[p.id]?.combined_min  ?? {},
+      combined_max:  opMap[p.id]?.combined_max  ?? {},
+      attr_min:      opMap[p.id]?.attr_min       ?? {},
+      attr_max:      opMap[p.id]?.attr_max       ?? {},
+    }));
     state.trends = Object.fromEntries(trends.map(t => [t.player_id, t]));
   } catch(e) {
     toast('Error conectando con el servidor. Verificá la URL.', 'err');
@@ -623,17 +686,22 @@ function renderLogin(root) {
               state.me = user;
               localStorage.setItem('me', JSON.stringify(user));
               toast(`Bienvenido, ${chosen.name}!`);
+              api(`/players/${chosen.id}/ping`, {method:'POST'}).catch(()=>{});
               renderContent();
             } catch(e) { toast('Error al ingresar', 'err'); }
           };
 
           try {
             btn.disabled = true; btn.textContent = '...';
-            const ps = await api(`/players/${chosen.id}/password_status`);
-            if (ps.has_password) {
-              openPasswordCheckModal(chosen, finishLogin, () => { btn.disabled = false; btn.textContent = 'Ingresar'; });
+            if (state.adminOk) {
+              await finishLogin();
             } else {
-              openSetPasswordPromptModal(chosen, finishLogin, () => { btn.disabled = false; btn.textContent = 'Ingresar'; });
+              const ps = await api(`/players/${chosen.id}/password_status`);
+              if (ps.has_password) {
+                openPasswordCheckModal(chosen, finishLogin, () => { btn.disabled = false; btn.textContent = 'Ingresar'; });
+              } else {
+                openSetPasswordPromptModal(chosen, finishLogin, () => { btn.disabled = false; btn.textContent = 'Ingresar'; });
+              }
             }
           } catch(e) {
             btn.disabled = false; btn.textContent = 'Ingresar';
@@ -764,11 +832,19 @@ async function renderSelfOpinion(root) {
   const attrWrap = h('div', {});
   attrs.forEach(a => {
     const row = h('div', { style:'margin-bottom:10px' });
-    const valLbl = h('span', { style:'color:var(--green);font-weight:700' }, `${vals[a][0]}–${vals[a][1]}`);
-    row.appendChild(h('div', { style:'display:flex;justify-content:space-between;font-size:.8rem;color:var(--muted2);margin-bottom:4px' },
-      h('span', {}, labels[a]), valLbl
-    ));
-    row.appendChild(mkRangeDouble(vals[a][0], vals[a][1], valLbl, (mn, mx) => { vals[a] = [mn, mx]; }));
+    if (a === 'vision') {
+      const valLbl = h('span', { style:'color:var(--green);font-weight:700' }, `${vals[a][0]}`);
+      row.appendChild(h('div', { style:'display:flex;justify-content:space-between;font-size:.8rem;color:var(--muted2);margin-bottom:4px' },
+        h('span', {}, labels[a] + ' 👁️'), valLbl
+      ));
+      row.appendChild(mkRangeSingle(vals[a][0], valLbl, v => { vals[a] = [v, v]; }));
+    } else {
+      const valLbl = h('span', { style:'color:var(--green);font-weight:700' }, `${vals[a][0]}–${vals[a][1]}`);
+      row.appendChild(h('div', { style:'display:flex;justify-content:space-between;font-size:.8rem;color:var(--muted2);margin-bottom:4px' },
+        h('span', {}, labels[a]), valLbl
+      ));
+      row.appendChild(mkRangeDouble(vals[a][0], vals[a][1], valLbl, (mn, mx) => { vals[a] = [mn, mx]; }));
+    }
     attrWrap.appendChild(row);
   });
   card.appendChild(attrWrap);
@@ -880,14 +956,23 @@ function renderOthersOpinion(root) {
 
     formWrap.innerHTML = '';
     attrs.forEach(a => {
-      const valLbl = h('span',{style:'color:var(--green);font-weight:700'},`${vals[a][0]}–${vals[a][1]}`);
-      const lbl = h('div',{style:'display:flex;justify-content:space-between;font-size:.8rem;color:var(--muted2);margin-bottom:3px'},
-        h('span',{},labels[a]), valLbl
-      );
-      const wrap = h('div',{style:'margin-bottom:10px'}, lbl,
-        mkRangeDouble(vals[a][0], vals[a][1], valLbl, (mn, mx) => { vals[a]=[mn,mx]; })
-      );
-      formWrap.appendChild(wrap);
+      if (a === 'vision') {
+        const valLbl = h('span',{style:'color:var(--green);font-weight:700'},`${vals[a][0]}`);
+        const lbl = h('div',{style:'display:flex;justify-content:space-between;font-size:.8rem;color:var(--muted2);margin-bottom:3px'},
+          h('span',{},labels[a] + ' 👁️'), valLbl
+        );
+        formWrap.appendChild(h('div',{style:'margin-bottom:10px'}, lbl,
+          mkRangeSingle(vals[a][0], valLbl, v => { vals[a]=[v,v]; })
+        ));
+      } else {
+        const valLbl = h('span',{style:'color:var(--green);font-weight:700'},`${vals[a][0]}–${vals[a][1]}`);
+        const lbl = h('div',{style:'display:flex;justify-content:space-between;font-size:.8rem;color:var(--muted2);margin-bottom:3px'},
+          h('span',{},labels[a]), valLbl
+        );
+        formWrap.appendChild(h('div',{style:'margin-bottom:10px'}, lbl,
+          mkRangeDouble(vals[a][0], vals[a][1], valLbl, (mn, mx) => { vals[a]=[mn,mx]; })
+        ));
+      }
     });
 
     formWrap.appendChild(h('button', { class:'btn btn-green btn-sm', style:'margin-top:4px', onClick: async () => {
@@ -935,10 +1020,18 @@ function renderPendingMatches(root) {
             if (!p) return;
             const row = h('div', { class:'team-player' }, h('span',{},playerLabel(p)));
             const t = state.trends[id];
-            if (t && t.trend !== 'flat') {
-              const icon = TREND_ICON[t.trend];
-              const col2 = t.trend.startsWith('up')?'var(--green)':'var(--red)';
-              row.appendChild(h('span',{style:`color:${col2};font-size:.7rem;margin-left:auto`},icon));
+            if (t) {
+              const icons = h('span',{style:'display:flex;gap:2px;margin-left:auto;align-items:center'});
+              if (t.trend !== 'flat') {
+                const col2 = t.trend.startsWith('up')?'var(--green)':'var(--red)';
+                icons.appendChild(h('span',{style:`color:${col2};font-size:.7rem`,title:'Racha corta'},TREND_ICON[t.trend]));
+              }
+              const lt = t.long_trend || 'flat';
+              if (lt !== 'flat') {
+                const col3 = lt.startsWith('up')?'var(--green)':'var(--red)';
+                icons.appendChild(h('span',{style:`color:${col3};font-size:.55rem;opacity:.65`,title:'Tendencia larga'},LONG_TREND_LABEL[lt]));
+              }
+              if (icons.children.length) row.appendChild(icons);
             }
             list.appendChild(row);
           });
@@ -1122,7 +1215,11 @@ function renderTeamGenerator(root) {
       if (p.is_goalkeeper) left2.appendChild(h('span', { class:'badge badge-gk' }, 'GK'));
       const t = state.trends[p.id];
       if (t) {
-        left2.appendChild(h('span', { class:`badge ${TREND_CLS[t.trend]}` }, TREND_ICON[t.trend]));
+        left2.appendChild(h('span', { class:`badge ${TREND_CLS[t.trend]}`, title:'Racha corta' }, TREND_ICON[t.trend]));
+        const lt = t.long_trend || 'flat';
+        if (lt !== 'flat') {
+          left2.appendChild(h('span', { class:`badge ${TREND_CLS[lt]}`, style:'opacity:.65;font-size:.55rem', title:'Tendencia larga' }, LONG_TREND_LABEL[lt]));
+        }
       }
       chip.appendChild(left2);
       chip.appendChild(h('span', { class:'player-ovr' }, ovr(p)));
@@ -1134,11 +1231,20 @@ function renderTeamGenerator(root) {
   }
 
   const counter = h('div', { style:'font-size:.82rem;color:var(--muted);margin-bottom:8px' }, '0/10 seleccionados');
+
+  // Toggle sinergia
+  const synChk = h('input', { type:'checkbox', id:'synChk', checked: true, style:'margin-right:6px' });
+  const synLabel = h('label', { for:'synChk', style:'font-size:.82rem;color:var(--muted2);cursor:pointer;display:flex;align-items:center;gap:4px;margin-bottom:10px' },
+    synChk, '⚡ Considerar sinergia entre jugadores'
+  );
+
   const genBtn = h('button', { class:'btn btn-green', disabled: true, onClick: async () => {
     genBtn.disabled = true;
     genBtn.innerHTML = '<span class="spinner"></span> Generando...';
     try {
-      const options = await api('/generate_teams', { method:'POST', body: JSON.stringify({ player_ids: [...selected], lambda_syn: 10 })});
+      const options = await api('/generate_teams', { method:'POST', body: JSON.stringify({
+        player_ids: [...selected], lambda_syn: 10, use_synergy: synChk.checked
+      })});
       renderResult(options);
     } catch(e) { toast('Error: '+e.message,'err'); }
     genBtn.disabled = selected.size !== 10;
@@ -1148,6 +1254,7 @@ function renderTeamGenerator(root) {
   card.appendChild(counter);
   card.appendChild(listWrap);
   renderList();
+  card.appendChild(synLabel);
   card.appendChild(genBtn);
   card.appendChild(resultWrap);
 
@@ -1171,7 +1278,7 @@ function renderTeamGenerator(root) {
 
     const mkTeam = (ids, cls, label) => {
       const box = h('div', { class:'team-box' });
-      const avgOvr = (ids.reduce((s,id)=>{const p=state.players.find(x=>x.id===id);return s+(p?p.overall_expected:0);},0)/ids.length).toFixed(1);
+      const avgOvr = (ids.reduce((s,id)=>{const p=state.players.find(x=>x.id===id);return s+(p?(p.overall_combined??p.overall_expected):0);},0)/ids.length).toFixed(1);
       box.appendChild(h('div', { class:`team-header ${cls}` }, label,
         h('span',{style:'font-size:.8rem;opacity:.7'},'OVR: '+avgOvr)
       ));
@@ -1182,9 +1289,18 @@ function renderTeamGenerator(root) {
         const row = h('div', { class:'team-player' });
         row.appendChild(h('span', {}, playerLabel(p)));
         const t = state.trends[id];
-        if (t && t.trend !== 'flat') {
-          const col = t.trend.startsWith('up') ? 'var(--green)' : 'var(--red)';
-          row.appendChild(h('span',{style:`color:${col};font-size:.7rem;margin-left:auto`}, TREND_ICON[t.trend]));
+        if (t) {
+          const icons = h('span',{style:'display:flex;gap:2px;margin-left:auto;align-items:center'});
+          if (t.trend !== 'flat') {
+            const col = t.trend.startsWith('up') ? 'var(--green)' : 'var(--red)';
+            icons.appendChild(h('span',{style:`color:${col};font-size:.7rem`}, TREND_ICON[t.trend]));
+          }
+          const lt = t.long_trend || 'flat';
+          if (lt !== 'flat') {
+            const col2 = lt.startsWith('up') ? 'var(--green)' : 'var(--red)';
+            icons.appendChild(h('span',{style:`color:${col2};font-size:.55rem;opacity:.65`}, LONG_TREND_LABEL[lt]));
+          }
+          if (icons.children.length) row.appendChild(icons);
         }
         list.appendChild(row);
       });
@@ -1200,6 +1316,35 @@ function renderTeamGenerator(root) {
     resultWrap.appendChild(h('div', { style:'text-align:center;color:var(--muted);font-size:.8rem;margin:8px 0' },
       `Diferencia de nivel: ${res.score_diff.toFixed(1)} · Sinergia total: ${res.syn_sum.toFixed(1)}`
     ));
+
+    // Predictor de resultado
+    const predWrap = h('div', { style:'margin:10px 0' });
+    const predBtn = h('button', { class:'btn btn-ghost btn-sm', onClick: async () => {
+      predBtn.disabled = true;
+      predBtn.innerHTML = '<span class="spinner"></span>';
+      try {
+        const pred = await api('/predict_result', { method:'POST', body: JSON.stringify({
+          team_a: res.team_a, team_b: res.team_b, lambda_syn: 10, use_synergy: synChk.checked
+        })});
+        predWrap.innerHTML = '';
+        const probA = pred.prob_a;
+        const probB = pred.prob_b;
+        const colA = probA >= probB ? 'var(--green)' : 'rgba(255,255,255,0.15)';
+        const colB = probB > probA ? 'var(--green)' : 'rgba(255,255,255,0.15)';
+        predWrap.appendChild(h('div', { style:'font-size:.75rem;color:var(--muted);text-align:center;margin-bottom:4px' }, '⚽ Predicción de resultado'));
+        const bar = h('div', { style:'display:flex;border-radius:8px;overflow:hidden;height:32px;font-size:.88rem;font-weight:700' });
+        bar.appendChild(h('div', { style:`flex:${Math.round(probA)};background:${colA};display:flex;align-items:center;justify-content:center;color:#fff` }, `A  ${probA}%`));
+        bar.appendChild(h('div', { style:`flex:${Math.round(probB)};background:${colB};display:flex;align-items:center;justify-content:center;color:#fff` }, `${probB}%  B`));
+        predWrap.appendChild(bar);
+        if (pred.syn_a !== 0 || pred.syn_b !== 0) {
+          predWrap.appendChild(h('div', { style:'text-align:center;font-size:.72rem;color:var(--muted);margin-top:3px' },
+            `Sinergia A: ${pred.syn_a} · Sinergia B: ${pred.syn_b}`
+          ));
+        }
+      } catch(e) { predWrap.innerHTML = ''; predBtn.disabled = false; predBtn.textContent = '⚽ Predecir resultado'; toast('Error: '+e.message,'err'); }
+    }}, '⚽ Predecir resultado');
+    predWrap.appendChild(predBtn);
+    resultWrap.appendChild(predWrap);
 
     if (state.adminOk) {
       const saveBtn = h('button', { class:'btn btn-green btn-sm', style:'margin-top:4px', onClick: async () => {
@@ -1441,10 +1586,16 @@ async function openPlayerModal(player, trendsMap) {
   ));
 
   const t = trendsMap[player.id];
-  if (t) modal.appendChild(h('div',{style:'margin-bottom:14px;display:flex;align-items:center;gap:8px'},
-    h('span',{class:`badge ${TREND_CLS[t.trend]}`},TREND_LABEL[t.trend]),
-    h('span',{style:'font-size:.8rem;color:var(--muted)'},'Forma reciente')
-  ));
+  if (t) {
+    const badgeRow = h('div',{style:'margin-bottom:14px;display:flex;align-items:center;gap:8px'});
+    badgeRow.appendChild(h('span',{class:`badge ${TREND_CLS[t.trend]}`,title:'Racha corta (4 partidos)'},TREND_LABEL[t.trend]));
+    const lt = t.long_trend || 'flat';
+    if (lt !== 'flat') {
+      badgeRow.appendChild(h('span',{class:`badge ${TREND_CLS[lt]}`,style:'opacity:.65;font-size:.6rem',title:'Tendencia larga (8 partidos)'},LONG_TREND_LABEL[lt]));
+    }
+    badgeRow.appendChild(h('span',{style:'font-size:.8rem;color:var(--muted)'},'Forma reciente'));
+    modal.appendChild(badgeRow);
+  }
 
   const spinner = h('div',{class:'spinner',style:'display:block;margin:20px auto'});
   modal.appendChild(spinner);
@@ -1452,9 +1603,9 @@ async function openPlayerModal(player, trendsMap) {
   document.body.appendChild(overlay);
 
   try {
-    const [history, chemistry] = await Promise.all([
+    const [history, partners] = await Promise.all([
       api(`/players/${player.id}/history`),
-      api(`/players/${player.id}/chemistry`),
+      api(`/players/${player.id}/partners`),
     ]);
     spinner.remove();
 
@@ -1493,47 +1644,107 @@ async function openPlayerModal(player, trendsMap) {
       modal.appendChild(formRow);
     }
 
-    // ── Atributos (compacto, sin valor admin) ──
+    // ── Atributos ──
     if (player.combined && Object.keys(player.combined).length) {
+      const trendKey     = t?.trend      || 'flat';
+      const longTrendKey = t?.long_trend || 'flat';
+      const tFactor = blendedFactor(trendKey, longTrendKey);
       modal.appendChild(h('div',{style:'font-size:.75rem;color:var(--muted2);font-weight:700;margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px'},'Atributos'));
-      const attGrid = h('div',{style:'display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:16px'});
-      attrs.forEach(a => {
-        const v = player.combined[a];
-        if (v == null) return;
-        const pct = Math.round((v/10)*100);
-        const cell = h('div',{style:'background:var(--bg3);border:1px solid var(--card-border);border-radius:8px;padding:8px 10px'});
-        cell.appendChild(h('div',{style:'display:flex;justify-content:space-between;align-items:center;margin-bottom:4px'},
-          h('span',{style:'font-size:.72rem;color:var(--muted)'},attrLabels[a]),
-          h('span',{style:'font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:.95rem'},v.toFixed(1))
-        ));
-        const track = h('div',{style:'height:4px;background:rgba(255,255,255,.08);border-radius:2px'});
-        track.appendChild(h('div',{style:`height:4px;width:${pct}%;background:var(--green);border-radius:2px`}));
-        cell.appendChild(track);
-        attGrid.appendChild(cell);
-      });
-      modal.appendChild(attGrid);
+
+      if (state.adminOk && player.attr_min && player.attr_max) {
+        // Vista detallada para admin:
+        // Rango del admin (attr_min/attr_max) define la escala — igual que el backend
+        // combined_min/combined_max son el promedio de opiniones (info adicional)
+        const adminAttrWrap = h('div',{style:'margin-bottom:16px;display:flex;flex-direction:column;gap:6px'});
+        attrs.forEach(a => {
+          const rMin = player.combined_min?.[a] ?? player.attr_min?.[a] ?? 4;
+          const rMax = player.combined_max?.[a] ?? player.attr_max?.[a] ?? 6;
+          const isSingle = Math.abs(rMax - rMin) < 0.01; // visión u otro attr con valor único
+          const effective = attrEffective(player, a, tFactor);
+
+          const row = h('div',{style:'background:var(--bg3);border:1px solid var(--card-border);border-radius:8px;padding:8px 10px'});
+          const top = h('div',{style:'display:flex;justify-content:space-between;align-items:center'});
+          const labelTxt = attrLabels[a] + (isSingle ? ' 👁️' : '');
+          top.appendChild(h('span',{style:'font-size:.75rem;color:var(--muted);font-weight:600'},labelTxt));
+
+          if (isSingle) {
+            // Valor único: solo mostrar el número, sin rango ni barra
+            top.appendChild(h('span',{style:'font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:1.05rem;color:var(--green)'},effective.toFixed(1)));
+            row.appendChild(top);
+          } else {
+            // Rango con barra y marcador
+            const pctEff = Math.max(0, Math.min(100, ((effective - rMin) / (rMax - rMin)) * 100));
+            const valsEl = h('div',{style:'display:flex;align-items:center;gap:8px'});
+            valsEl.appendChild(h('span',{style:'font-size:.7rem;color:var(--muted2)'},rMin.toFixed(1)));
+            valsEl.appendChild(h('span',{style:'font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:1.05rem;color:var(--green)'},effective.toFixed(1)));
+            valsEl.appendChild(h('span',{style:'font-size:.7rem;color:var(--muted2)'},rMax.toFixed(1)));
+            top.appendChild(valsEl);
+            row.appendChild(top);
+            const trackWrap = h('div',{style:'position:relative;height:6px;background:rgba(255,255,255,.08);border-radius:3px;margin-top:5px'});
+            trackWrap.appendChild(h('div',{style:`position:absolute;left:0;top:0;height:6px;width:${pctEff}%;background:var(--green);border-radius:3px`}));
+            const dot = h('div',{style:`position:absolute;top:-3px;left:calc(${pctEff}% - 5px);width:10px;height:10px;border-radius:50%;background:var(--green);border:2px solid var(--bg)`});
+            trackWrap.appendChild(dot);
+            row.appendChild(trackWrap);
+          }
+
+          adminAttrWrap.appendChild(row);
+        });
+        modal.appendChild(adminAttrWrap);
+      } else {
+        // Vista compacta para usuarios normales
+        const attGrid = h('div',{style:'display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:16px'});
+        attrs.forEach(a => {
+          const v = attrEffective(player, a, tFactor);
+          const pct = Math.round((v/10)*100);
+          const cell = h('div',{style:'background:var(--bg3);border:1px solid var(--card-border);border-radius:8px;padding:8px 10px'});
+          cell.appendChild(h('div',{style:'display:flex;justify-content:space-between;align-items:center;margin-bottom:4px'},
+            h('span',{style:'font-size:.72rem;color:var(--muted)'},attrLabels[a]),
+            h('span',{style:'font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:.95rem'},v.toFixed(1))
+          ));
+          const track = h('div',{style:'height:4px;background:rgba(255,255,255,.08);border-radius:2px'});
+          track.appendChild(h('div',{style:`height:4px;width:${pct}%;background:var(--green);border-radius:2px`}));
+          cell.appendChild(track);
+          attGrid.appendChild(cell);
+        });
+        modal.appendChild(attGrid);
+      }
     }
 
-    // ── Química ──
-    if (chemistry.best_partner_name || chemistry.worst_rival_name) {
-      modal.appendChild(h('div',{style:'font-size:.75rem;color:var(--muted2);font-weight:700;margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px'},'Química'));
-      const chem = h('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px'});
-      if (chemistry.best_partner_name) {
-        chem.appendChild(h('div',{style:'background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.3);border-radius:10px;padding:10px;text-align:center'},
-          h('div',{style:'font-size:.68rem;color:var(--muted);margin-bottom:4px'},'🤝 Mejor compañero'),
-          h('div',{style:'font-weight:700;font-size:.9rem'},chemistry.best_partner_name),
-          h('div',{style:'color:var(--green);font-size:.82rem;margin-top:2px'},`${chemistry.best_partner_win_rate}% juntos`)
-        ));
-      }
-      if (chemistry.worst_rival_name) {
-        chem.appendChild(h('div',{style:'background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3);border-radius:10px;padding:10px;text-align:center'},
-          h('div',{style:'font-size:.68rem;color:var(--muted);margin-bottom:4px'},'⚔️ Rival más duro'),
-          h('div',{style:'font-weight:700;font-size:.9rem'},chemistry.worst_rival_name),
-          h('div',{style:'color:var(--red);font-size:.82rem;margin-top:2px'},`${chemistry.worst_rival_win_rate}% vs él`)
-        ));
-      }
-      modal.appendChild(chem);
-    }
+    // ── Compañeros y Rivales (op.gg style) ──
+    const mkPartnerSection = (list, label, isPartner) => {
+      if (!list.length) return;
+      modal.appendChild(h('div',{style:'font-size:.75rem;color:var(--muted2);font-weight:700;margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px'},label));
+      const wrap = h('div',{style:'margin-bottom:16px'});
+      list.slice(0,5).forEach((p, idx) => {
+        const wr = p.win_rate;
+        const barColor = wr>=60?'var(--green)':wr>=45?'var(--yellow)':'var(--red)';
+        const textColor = wr>=60?'var(--green)':wr>=45?'var(--yellow)':'var(--red)';
+        const row = h('div',{style:'display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.04)'});
+
+        // Rank
+        row.appendChild(h('span',{style:'font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:.9rem;color:var(--muted);min-width:16px'},`${idx+1}`));
+
+        // Nombre
+        const nameCol = h('div',{style:'flex:1;min-width:0'});
+        nameCol.appendChild(h('div',{style:'font-size:.88rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'},p.name));
+        nameCol.appendChild(h('div',{style:'font-size:.7rem;color:var(--muted)'},`${p.gp} partidos · ${p.wins}V ${p.draws}E ${p.losses}D`));
+        row.appendChild(nameCol);
+
+        // Barra win rate
+        const barWrap = h('div',{style:'width:70px'});
+        const track = h('div',{style:'height:4px;background:rgba(255,255,255,.08);border-radius:2px;margin-bottom:3px'});
+        track.appendChild(h('div',{style:`height:4px;width:${wr}%;background:${barColor};border-radius:2px;transition:width .3s`}));
+        barWrap.appendChild(track);
+        barWrap.appendChild(h('div',{style:`font-family:"Barlow Condensed",sans-serif;font-size:.9rem;font-weight:900;color:${textColor};text-align:right`},`${wr}%`));
+        row.appendChild(barWrap);
+
+        wrap.appendChild(row);
+      });
+      modal.appendChild(wrap);
+    };
+
+    mkPartnerSection(partners.partners, '🤝 Mejores compañeros', true);
+    mkPartnerSection(partners.rivals,   '⚔️ Rivales frecuentes', false);
 
     // ── Últimos partidos ──
     modal.appendChild(h('div',{style:'font-size:.75rem;color:var(--muted2);font-weight:700;margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px'},'Últimos partidos'));
@@ -1614,11 +1825,17 @@ async function renderStats(root) {
   async function renderRanking() {
     const [pwop, trends] = await Promise.all([
       api('/players/with_opinions'),
-      api('/players/trends?lookback=5'),
+      api('/players/trends?lookback=4'),
     ]);
     playersWithOp = pwop;
     trendsMap = Object.fromEntries(trends.map(t => [t.player_id, t]));
-    const sorted = [...pwop].sort((a,b) => b.overall_combined - a.overall_combined);
+    const sorted = [...pwop].sort((a,b) => {
+      const ta  = trendsMap[a.id]?.trend      || 'flat';
+      const tla = trendsMap[a.id]?.long_trend || 'flat';
+      const tb  = trendsMap[b.id]?.trend      || 'flat';
+      const tlb = trendsMap[b.id]?.long_trend || 'flat';
+      return ovrWithTrend(b, tb, tlb) - ovrWithTrend(a, ta, tla);
+    });
     content.innerHTML = '';
     const card = h('div',{class:'card'});
     card.appendChild(h('div',{class:'card-title'},'📊 Ranking por nivel'));
@@ -1644,24 +1861,35 @@ async function renderStats(root) {
       // #
       row.appendChild(h('div',{style:'font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:.9rem;color:var(--muted);text-align:center'},`${idx+1}`));
 
-      // Nombre + trend
-      const nameCol = h('div',{style:'display:flex;align-items:center;gap:6px;min-width:0'});
+      // Nombre + trend badges
+      const trendKey     = t?.trend      || 'flat';
+      const longTrendKey = t?.long_trend || 'flat';
+      const nameCol = h('div',{style:'display:flex;align-items:center;gap:4px;min-width:0;flex-wrap:wrap'});
       nameCol.appendChild(h('span',{style:'font-weight:600;font-size:.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'},p.name+(p.is_goalkeeper?' 🥅':'')));
-      if (t) nameCol.appendChild(h('span',{class:`badge ${TREND_CLS[t.trend]}`},TREND_LABEL[t.trend]));
+      if (t) {
+        nameCol.appendChild(h('span',{class:`badge ${TREND_CLS[trendKey]}`,title:'Racha corta (4 partidos)'},TREND_LABEL[trendKey]));
+        if (longTrendKey !== 'flat') {
+          nameCol.appendChild(h('span',{class:`badge ${TREND_CLS[longTrendKey]}`,style:'opacity:.65;font-size:.6rem',title:'Tendencia larga (8 partidos)'},LONG_TREND_LABEL[longTrendKey]));
+        }
+      }
       row.appendChild(nameCol);
 
       // Mini bars (6 atributos en pequeño)
+      const factor = blendedFactor(trendKey, longTrendKey);
       const barsCol = h('div',{style:'display:flex;gap:2px;align-items:flex-end;height:20px'});
       attrs.forEach(a => {
-        const v = p.combined[a] || 0;
+        const v = attrEffective(p, a, factor);
         const pct = Math.round((v/10)*100);
         const bar = h('div',{style:`width:10px;height:${Math.max(3,Math.round(pct*0.18))}px;background:var(--green);border-radius:2px 2px 0 0;opacity:.8`,title:`${attrLabels[a]}: ${v.toFixed(1)}`});
         barsCol.appendChild(bar);
       });
       row.appendChild(barsCol);
 
-      // OVR
-      row.appendChild(h('div',{style:'font-family:"Barlow Condensed",sans-serif;font-size:1.2rem;font-weight:900;color:var(--green);text-align:right'},p.overall_combined.toFixed(1)));
+      // OVR ajustado por racha corta + larga
+      const adjOvr = ovrWithTrend(p, trendKey, longTrendKey);
+      const ovrCell = h('div',{style:'text-align:right'});
+      ovrCell.appendChild(h('div',{style:'font-family:"Barlow Condensed",sans-serif;font-size:1.2rem;font-weight:900;color:var(--green)'},adjOvr.toFixed(1)));
+      row.appendChild(ovrCell);
 
       wrap.appendChild(row);
     });
@@ -1756,7 +1984,7 @@ async function renderStats(root) {
 
     // Load players data for modal
     if (!playersWithOp.length) {
-      const [pwop, trends] = await Promise.all([api('/players/with_opinions'), api('/players/trends?lookback=5')]);
+      const [pwop, trends] = await Promise.all([api('/players/with_opinions'), api('/players/trends?lookback=4')]);
       playersWithOp = pwop;
       trendsMap = Object.fromEntries(trends.map(t => [t.player_id, t]));
     }
@@ -1809,7 +2037,341 @@ function renderAdmin(root) {
   );
   root.appendChild(adminBar);
 
-  renderPlayerAdmin(root);
+  // Sub-tabs
+  let adminTab = 'jugadores';
+  const tabBar = h('div',{style:'display:flex;gap:4px;margin-bottom:20px;background:var(--bg2);border:1px solid var(--card-border);padding:4px;border-radius:14px;width:fit-content;flex-wrap:wrap'});
+  const adminTabs = [['jugadores','👥 Jugadores'],['participacion','📋 Participación'],['usuarios','👤 Usuarios'],['config','⚙️ Config']];
+  const tabBtns = {};
+  const tabContent = h('div',{});
+  root.appendChild(tabBar);
+  root.appendChild(tabContent);
+
+  const setAdminTab = (t) => {
+    adminTab = t;
+    adminTabs.forEach(([key]) => {
+      const b = tabBtns[key];
+      b.style.background = key===t ? 'var(--green)' : 'none';
+      b.style.color = key===t ? '#000' : 'var(--muted)';
+    });
+    tabContent.innerHTML = '';
+    if (t === 'jugadores') renderPlayerAdmin(tabContent);
+    else if (t === 'participacion') renderParticipacion(tabContent);
+    else if (t === 'usuarios') renderUsuarios(tabContent);
+    else if (t === 'config') renderAdminConfig(tabContent);
+  };
+
+  adminTabs.forEach(([key, label]) => {
+    const btn = h('button',{style:'font-family:"Barlow Condensed",sans-serif;font-size:1rem;font-weight:700;padding:6px 16px;border-radius:10px;border:none;cursor:pointer;transition:all .18s;background:none;color:var(--muted)'},label);
+    btn.onclick = () => setAdminTab(key);
+    tabBtns[key] = btn;
+    tabBar.appendChild(btn);
+  });
+  setAdminTab('jugadores');
+}
+
+// ── PARTICIPACIÓN ──────────────────────────────────────
+async function renderParticipacion(root) {
+  const card = h('div',{class:'card'});
+  card.appendChild(h('div',{class:'card-title'},'📋 Estado de participación'));
+  const wrap = h('div',{});
+  card.appendChild(wrap);
+  root.appendChild(card);
+
+  wrap.innerHTML = '<div class="spinner" style="display:block;margin:20px auto"></div>';
+  try {
+    const data = await api('/admin/participation');
+    wrap.innerHTML = '';
+
+    // Summary pills
+    const total = data.length;
+    const selfDone = data.filter(p=>p.self_eval).length;
+    const fullDone = data.filter(p=>p.evals_given===p.total_to_give && p.self_eval).length;
+    const summRow = h('div',{style:'display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px'});
+    const mkPill = (val, lbl, color) => h('div',{style:`background:${color}22;border:1px solid ${color};border-radius:10px;padding:8px 14px;text-align:center`},
+      h('div',{style:`font-family:"Barlow Condensed",sans-serif;font-size:1.4rem;font-weight:900;color:${color}`},String(val)),
+      h('div',{style:'font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.5px'},lbl)
+    );
+    summRow.appendChild(mkPill(total, 'Jugadores', 'var(--muted2)'));
+    summRow.appendChild(mkPill(selfDone+'/'+total, 'Autoevaluados', 'var(--blue)'));
+    summRow.appendChild(mkPill(fullDone+'/'+total, 'Completos', 'var(--green)'));
+    wrap.appendChild(summRow);
+
+    // Table header
+    const hdr = h('div',{style:'display:grid;grid-template-columns:1fr 60px 80px 80px 80px;gap:6px;padding:6px 8px;font-size:.7rem;color:var(--muted);font-weight:700;border-bottom:1px solid var(--card-border);margin-bottom:4px'});
+    ['Jugador','Auto','Dio','Recibió','Estado'].forEach(t => hdr.appendChild(h('div',{style:'text-align:center'},t)));
+    hdr.firstChild.style.textAlign = 'left';
+    wrap.appendChild(hdr);
+
+    data.forEach(p => {
+      const complete = p.self_eval && p.evals_given === p.total_to_give;
+      const partial = p.self_eval || p.evals_given > 0;
+      const statusColor = complete ? 'var(--green)' : partial ? 'var(--yellow)' : 'var(--red)';
+      const statusLabel = complete ? '✓ Completo' : partial ? '⚠ Parcial' : '✗ Sin iniciar';
+
+      const row = h('div',{style:'display:grid;grid-template-columns:1fr 60px 80px 80px 80px;gap:6px;padding:7px 8px;border-radius:8px;align-items:center;border-bottom:1px solid rgba(255,255,255,.04);cursor:pointer;transition:background .15s'});
+      row.onmouseenter = () => row.style.background = 'rgba(255,255,255,.04)';
+      row.onmouseleave = () => row.style.background = '';
+      row.onclick = () => openParticipacionModal(p, data);
+
+      // Nombre
+      const nameCol = h('div',{style:'display:flex;align-items:center;gap:6px'});
+      nameCol.appendChild(h('span',{style:'font-weight:600;font-size:.88rem'},p.name+(p.is_goalkeeper?' 🥅':'')));
+      if (p.has_password) nameCol.appendChild(h('span',{style:'font-size:.65rem;color:var(--muted)'},'🔒'));
+      row.appendChild(nameCol);
+
+      // Auto-eval
+      row.appendChild(h('div',{style:'text-align:center;font-size:1rem'}, p.self_eval ? '✅' : '❌'));
+
+      // Opiniones dadas
+      const giveColor = p.evals_given===p.total_to_give?'var(--green)':p.evals_given>0?'var(--yellow)':'var(--red)';
+      row.appendChild(h('div',{style:`text-align:center;font-family:"Barlow Condensed",sans-serif;font-weight:700;color:${giveColor}`},`${p.evals_given}/${p.total_to_give}`));
+
+      // Opiniones recibidas
+      row.appendChild(h('div',{style:'text-align:center;font-family:"Barlow Condensed",sans-serif;font-weight:700;color:var(--muted2)'},`${p.evals_received}/${p.total_to_give}`));
+
+      // Estado
+      row.appendChild(h('div',{style:`text-align:center;font-size:.75rem;font-weight:700;color:${statusColor}`},statusLabel));
+
+      wrap.appendChild(row);
+    });
+    // ── Matriz de opiniones ──
+    const matCard = h('div',{class:'card',style:'margin-top:16px;overflow-x:auto'});
+    matCard.appendChild(h('div',{class:'card-title'},'🔲 Matriz de opiniones'));
+    matCard.appendChild(h('div',{style:'font-size:.75rem;color:var(--muted);margin-bottom:12px'},'Fila = quién opina · Columna = sobre quién · — = autoevaluación'));
+
+    const cellSz = '28px';
+    const table = h('div',{style:'display:inline-block;min-width:100%'});
+
+    // Header row (columnas = targets)
+    const headerRow = h('div',{style:'display:flex;align-items:flex-end;margin-bottom:2px'});
+    headerRow.appendChild(h('div',{style:`min-width:110px`})); // spacer
+    data.forEach(target => {
+      const lbl = h('div',{style:`width:${cellSz};writing-mode:vertical-rl;transform:rotate(180deg);font-size:.65rem;color:var(--muted2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-height:80px;text-align:left;cursor:default`,title:target.name},
+        target.name.split(' ')[0]);
+      headerRow.appendChild(lbl);
+    });
+    table.appendChild(headerRow);
+
+    // Data rows (filas = actors)
+    data.forEach(actor => {
+      const row = h('div',{style:'display:flex;align-items:center;margin-bottom:2px'});
+      // Nombre del actor
+      row.appendChild(h('div',{style:`min-width:110px;font-size:.78rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:6px`,title:actor.name},
+        actor.name));
+      // Celdas
+      data.forEach(target => {
+        let bg, title;
+        if (actor.id === target.id) {
+          // Diagonal: autoevaluación
+          bg = actor.self_eval ? 'rgba(59,130,246,.5)' : 'rgba(239,68,68,.25)';
+          title = actor.self_eval ? 'Se autoevaluó' : 'Sin autoevaluar';
+        } else {
+          const gave = !actor.missing_evals.includes(target.name);
+          bg = gave ? 'rgba(34,197,94,.4)' : 'rgba(239,68,68,.15)';
+          title = gave ? `${actor.name} opinó sobre ${target.name}` : `${actor.name} NO opinó sobre ${target.name}`;
+        }
+        const cell = h('div',{
+          style:`width:${cellSz};height:${cellSz};border-radius:4px;background:${bg};margin-right:2px;cursor:default;transition:transform .1s;flex-shrink:0`,
+          title
+        });
+        cell.onmouseenter = () => cell.style.transform = 'scale(1.3)';
+        cell.onmouseleave = () => cell.style.transform = '';
+        row.appendChild(cell);
+      });
+      table.appendChild(row);
+    });
+
+    // Leyenda
+    const legend = h('div',{style:'display:flex;gap:14px;margin-top:12px;flex-wrap:wrap'});
+    [
+      ['rgba(34,197,94,.4)','Opinó'],
+      ['rgba(239,68,68,.15)','No opinó'],
+      ['rgba(59,130,246,.5)','Autoevaluado'],
+      ['rgba(239,68,68,.25)','Sin autoevaluar'],
+    ].forEach(([color, lbl]) => {
+      legend.appendChild(h('div',{style:'display:flex;align-items:center;gap:5px;font-size:.72rem;color:var(--muted2)'},
+        h('div',{style:`width:12px;height:12px;border-radius:3px;background:${color};flex-shrink:0`}),
+        h('span',{},lbl)
+      ));
+    });
+
+    matCard.appendChild(table);
+    matCard.appendChild(legend);
+    root.appendChild(matCard);
+
+  } catch(e) {
+    wrap.innerHTML = '';
+    wrap.appendChild(h('div',{class:'empty'},h('p',{},'Error cargando datos: '+e.message)));
+  }
+}
+
+async function openParticipacionModal(p, allData) {
+  const overlay = h('div',{class:'overlay',onClick:e=>{if(e.target===overlay)overlay.remove();}});
+  const modal = h('div',{class:'modal',style:'max-width:480px'});
+  modal.appendChild(h('div',{class:'modal-title'},
+    h('span',{},p.name+(p.is_goalkeeper?' 🥅':'')),
+    h('button',{class:'close-btn',onClick:()=>overlay.remove()},'×')
+  ));
+
+  // Admin: botón para ingresar como este jugador
+  if (state.adminOk) {
+    modal.appendChild(h('button',{class:'btn btn-sm',style:'width:100%;margin-bottom:14px',onClick:async()=>{
+      try {
+        const allUsers = await api('/users');
+        let user = allUsers.find(u => u.player_id === p.id);
+        if (!user) {
+          user = await api('/users',{method:'POST',body:JSON.stringify({name:p.name,is_admin:false,player_id:p.id})});
+        }
+        state.me = user;
+        localStorage.setItem('me', JSON.stringify(user));
+        overlay.remove();
+        setTab('jugar');
+        toast(`Ingresado como ${p.name} ✓`);
+      } catch(e) { toast('Error: '+e.message,'err'); }
+    }},`🔑 Ingresar como ${p.name}`));
+  }
+
+  // Estado general
+  const complete = p.self_eval && p.evals_given===p.total_to_give;
+  const statusColor = complete?'var(--green)':p.evals_given>0||p.self_eval?'var(--yellow)':'var(--red)';
+  const statusLabel = complete?'✓ Participación completa':p.evals_given>0||p.self_eval?'⚠ Participación incompleta':'✗ Sin participar';
+  modal.appendChild(h('div',{style:`font-size:.85rem;font-weight:700;color:${statusColor};margin-bottom:16px`},statusLabel));
+
+  // Admin: cargar valores reales de las opiniones del jugador
+  const attrs = ['shot','passing','defense','vision','stamina','speed'];
+  const attrLabels = {shot:'Dis',passing:'Pase',defense:'Def',vision:'Vis',stamina:'Fís',speed:'Vel'};
+  let opsByTarget = {};
+  if (state.adminOk) {
+    try {
+      const allUsers = await api('/users');
+      const user = allUsers.find(u => u.player_id === p.id);
+      if (user) {
+        const ops = await api(`/opinions?actor_user_id=${user.id}`);
+        ops.forEach(o => { opsByTarget[o.target_player_id] = o; });
+      }
+    } catch(e) {}
+  }
+
+  const mkVals = (op) => {
+    const grid = h('div',{style:'display:grid;grid-template-columns:repeat(3,1fr);gap:2px 8px;margin-top:5px'});
+    attrs.forEach(a => {
+      grid.appendChild(h('div',{style:'font-size:.7rem'},
+        h('span',{style:'color:var(--muted)'},attrLabels[a]+': '),
+        h('span',{style:'color:var(--green);font-weight:700'},`${op[a+'_min']}–${op[a+'_max']}`)
+      ));
+    });
+    return grid;
+  };
+
+  // Autoevaluación
+  modal.appendChild(h('div',{style:'font-size:.75rem;color:var(--muted2);font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px'},'Autoevaluación'));
+  const selfBox = h('div',{style:'padding:8px 10px;border-radius:8px;background:var(--bg3);margin-bottom:14px'});
+  selfBox.appendChild(h('div',{style:'display:flex;align-items:center;gap:8px;font-size:.9rem'},
+    h('span',{style:'font-size:1.1rem'},p.self_eval?'✅':'❌'),
+    h('span',{},p.self_eval?'Se autoevaluó':'Todavía no se autoevaluó')
+  ));
+  const selfOp = opsByTarget[p.id];
+  if (selfOp) selfBox.appendChild(mkVals(selfOp));
+  modal.appendChild(selfBox);
+
+  // Opiniones que dio
+  modal.appendChild(h('div',{style:'font-size:.75rem;color:var(--muted2);font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px'},
+    `Opiniones sobre otros — ${p.evals_given}/${p.total_to_give}`));
+  const others = allData.filter(x=>x.id!==p.id);
+  others.forEach(other => {
+    const gave = !p.missing_evals.includes(other.name);
+    const op = opsByTarget[other.id];
+    const row = h('div',{style:'padding:6px 10px;border-radius:8px;margin-bottom:4px;background:var(--bg3)'});
+    const topRow = h('div',{style:'display:flex;align-items:center;justify-content:space-between'});
+    topRow.appendChild(h('span',{style:'font-size:.88rem'},other.name+(other.is_goalkeeper?' 🥅':'')));
+    topRow.appendChild(h('span',{style:`font-size:.9rem;font-weight:700;color:${gave?'var(--green)':'var(--red)'}`},gave?'✓ Opinó':'✗ Pendiente'));
+    row.appendChild(topRow);
+    if (op) row.appendChild(mkVals(op));
+    modal.appendChild(row);
+  });
+
+  // Quiénes no opinaron sobre él
+  const notReceived = allData.filter(x=>x.id!==p.id && x.missing_evals.includes(p.name));
+  if (notReceived.length) {
+    modal.appendChild(h('div',{style:'font-size:.75rem;color:var(--muted2);font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin:14px 0 8px'},
+      `Pendiente de opinar sobre ${p.name.split(' ')[0]} (${notReceived.length})`));
+    notReceived.forEach(other => {
+      modal.appendChild(h('div',{style:'padding:6px 10px;border-radius:8px;margin-bottom:4px;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.2);font-size:.88rem;color:var(--muted2)'},
+        `✗ ${other.name}`));
+    });
+  }
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+}
+
+// ── USUARIOS ───────────────────────────────────────────
+async function renderUsuarios(root) {
+  const card = h('div',{class:'card'});
+  card.appendChild(h('div',{class:'card-title'},'👤 Actividad de jugadores'));
+  const wrap = h('div',{});
+  card.appendChild(wrap);
+  root.appendChild(card);
+
+  wrap.innerHTML = '<div class="spinner" style="display:block;margin:20px auto"></div>';
+  try {
+    const data = await api('/admin/participation');
+    wrap.innerHTML = '';
+
+    const hdr = h('div',{style:'display:grid;grid-template-columns:1fr 100px 140px 60px;gap:6px;padding:6px 8px;font-size:.7rem;color:var(--muted);font-weight:700;border-bottom:1px solid var(--card-border);margin-bottom:4px'});
+    ['Jugador','Registrado','Último acceso','PW'].forEach(t => hdr.appendChild(h('div',{style:'text-align:center'},t)));
+    hdr.firstChild.style.textAlign = 'left';
+    wrap.appendChild(hdr);
+
+    const sorted = [...data].sort((a,b) => {
+      if (!a.last_login && !b.last_login) return 0;
+      if (!a.last_login) return 1;
+      if (!b.last_login) return -1;
+      return new Date(b.last_login) - new Date(a.last_login);
+    });
+
+    const fmtDate = iso => {
+      if (!iso) return '—';
+      const d = new Date(iso);
+      const now = new Date();
+      const diff = Math.floor((now - d) / 1000);
+      if (diff < 60) return 'Hace un momento';
+      if (diff < 3600) return `Hace ${Math.floor(diff/60)} min`;
+      if (diff < 86400) return `Hace ${Math.floor(diff/3600)} hs`;
+      return d.toLocaleDateString('es-AR',{day:'numeric',month:'short',year:'numeric'});
+    };
+
+    sorted.forEach(p => {
+      const row = h('div',{style:'display:grid;grid-template-columns:1fr 100px 140px 60px;gap:6px;padding:7px 8px;border-radius:8px;align-items:center;border-bottom:1px solid rgba(255,255,255,.04)'});
+
+      row.appendChild(h('div',{style:'font-weight:600;font-size:.88rem'},p.name+(p.is_goalkeeper?' 🥅':'')));
+      row.appendChild(h('div',{style:'text-align:center;font-size:.75rem;color:var(--muted)'},fmtDate(p.created_at)));
+
+      const loginColor = !p.last_login ? 'var(--red)' : 'var(--muted2)';
+      row.appendChild(h('div',{style:`text-align:center;font-size:.75rem;color:${loginColor}`},fmtDate(p.last_login)));
+      row.appendChild(h('div',{style:'text-align:center;font-size:.9rem'},p.has_password?'🔒':'🔓'));
+
+      wrap.appendChild(row);
+    });
+  } catch(e) {
+    wrap.innerHTML = '';
+    wrap.appendChild(h('div',{class:'empty'},h('p',{},'Error: '+e.message)));
+  }
+}
+
+// ── CONFIG ─────────────────────────────────────────────
+function renderAdminConfig(root) {
+  const card = h('div',{class:'card'});
+  card.appendChild(h('div',{class:'card-title'},'⚙️ Configuración'));
+  card.appendChild(h('p',{style:'font-size:.82rem;color:var(--muted);margin-bottom:12px'},`Backend actual: ${API}`));
+  const urlInp = h('input',{type:'text',placeholder:`URL del backend (default: ${BACKEND_URL})`,value:localStorage.getItem('apiUrl')||''});
+  card.appendChild(h('div',{class:'field'},h('label',{},'Sobreescribir URL del backend'),urlInp));
+  card.appendChild(h('button',{class:'btn btn-ghost btn-sm',onClick:()=>{
+    const v = urlInp.value.trim();
+    if(v) localStorage.setItem('apiUrl', v); else localStorage.removeItem('apiUrl');
+    toast('Configuración guardada. Recargando...'); setTimeout(()=>location.reload(),800);
+  }},'Guardar'));
+  root.appendChild(card);
 }
 
 function renderPlayerAdmin(root) {
@@ -1877,15 +2439,25 @@ function renderPlayerAdmin(root) {
     const gkCb = h('input',{type:'checkbox'}); gkCb.checked = p?.is_goalkeeper||false;
     formCard.appendChild(h('div',{class:'field'},h('label',{class:'check-row'},gkCb,'Es arquero')));
 
-    formCard.appendChild(h('div',{style:'font-size:.8rem;color:var(--muted2);margin:10px 0 6px'},'Atributos (rango min–max):'));
+    formCard.appendChild(h('div',{style:'font-size:.8rem;color:var(--muted2);margin:10px 0 6px'},'Atributos (rango min–max, visión valor único):'));
     attrs.forEach(a => {
-      const valLbl = h('span',{style:'color:var(--green);font-weight:700'},`${vals[a][0]}–${vals[a][1]}`);
-      const lbl = h('div',{style:'display:flex;justify-content:space-between;font-size:.8rem;color:var(--muted2);margin-bottom:3px'},
-        h('span',{},attrLabels[a]), valLbl
-      );
-      formCard.appendChild(h('div',{style:'margin-bottom:8px'}, lbl,
-        mkRangeDouble(vals[a][0], vals[a][1], valLbl, (mn, mx) => { vals[a]=[mn,mx]; })
-      ));
+      if (a === 'vision') {
+        const valLbl = h('span',{style:'color:var(--green);font-weight:700'},`${vals[a][0]}`);
+        const lbl = h('div',{style:'display:flex;justify-content:space-between;font-size:.8rem;color:var(--muted2);margin-bottom:3px'},
+          h('span',{},attrLabels[a] + ' 👁️'), valLbl
+        );
+        formCard.appendChild(h('div',{style:'margin-bottom:8px'}, lbl,
+          mkRangeSingle(vals[a][0], valLbl, v => { vals[a]=[v,v]; })
+        ));
+      } else {
+        const valLbl = h('span',{style:'color:var(--green);font-weight:700'},`${vals[a][0]}–${vals[a][1]}`);
+        const lbl = h('div',{style:'display:flex;justify-content:space-between;font-size:.8rem;color:var(--muted2);margin-bottom:3px'},
+          h('span',{},attrLabels[a]), valLbl
+        );
+        formCard.appendChild(h('div',{style:'margin-bottom:8px'}, lbl,
+          mkRangeDouble(vals[a][0], vals[a][1], valLbl, (mn, mx) => { vals[a]=[mn,mx]; })
+        ));
+      }
     });
 
     const btnRow = h('div',{style:'display:flex;gap:8px;margin-top:12px;flex-wrap:wrap'});
@@ -1910,21 +2482,6 @@ function renderPlayerAdmin(root) {
   renderForm();
   loadList();
   root.appendChild(card);
-
-  // Config API URL
-  const configCard = h('div',{class:'card'});
-  configCard.appendChild(h('div',{class:'card-title'},'⚙️ Configuración'));
-  configCard.appendChild(h('p',{style:'font-size:.82rem;color:var(--muted);margin-bottom:12px'},`Backend actual: ${API}`));
-  const urlInp = h('input',{type:'text',placeholder:`URL del backend (default: ${BACKEND_URL})`,value:localStorage.getItem('apiUrl')||''});
-  configCard.appendChild(h('div',{class:'field'},h('label',{},'Sobreescribir URL del backend'),urlInp));
-
-  configCard.appendChild(h('button',{class:'btn btn-ghost btn-sm',onClick:()=>{
-    const v = urlInp.value.trim();
-    if(v) localStorage.setItem('apiUrl', v); else localStorage.removeItem('apiUrl');
-    toast('Configuración guardada. Recargando...'); setTimeout(()=>location.reload(),800);
-  }},'Guardar'));
-
-  root.appendChild(configCard);
 }
 
 // =========================================================
