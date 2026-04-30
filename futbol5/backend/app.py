@@ -685,7 +685,7 @@ def record_result(mid: int, data: MatchResultIn, db=Depends(get_session)):
     m.winner_team=data.winner_team; m.goal_diff=data.goal_diff
     m.rank_winners=csv_join(data.rank_winners) if data.rank_winners else None
     m.rank_losers=csv_join(data.rank_losers) if data.rank_losers else None
-    m.is_recorded=True; m.played_at=data.played_at or datetime.utcnow()
+    m.is_recorded=True; m.played_at=data.played_at or m.scheduled_at or datetime.utcnow()
     all_ids = (csv_split(m.team_a) or []) + (csv_split(m.team_b) or [])
     m.trends_snapshot = json.dumps(trends_snapshot(db, all_ids, lookback=3))
     db.commit(); db.refresh(m); return to_match_out(m)
