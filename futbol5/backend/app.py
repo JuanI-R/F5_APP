@@ -397,22 +397,42 @@ def compute_combined_with_trend(p: Player, trend: str, long_trend: str, db) -> f
         total += (r_min + factor * (r_max - r_min)) * w[attr]
     return total
 
-def trends_snapshot(db, pids, lookback=4, long_lookback=8):
-    matches = db.query(Match).filter(Match.is_recorded==True).order_by(Match.played_at.desc()).all()
+def player_trend_scores(pid, matches, short_window=4, long_window=8):
+    """Computes (short_total, long_total) for a player.
+
+    short_total: suma de _perf_score sobre los últimos `short_window` partidos
+                 jugados GLOBALMENTE (regardless of player). Si el jugador no
+                 estuvo en un partido de esa ventana, contribuye 0.
+    long_total:  suma de _perf_score sobre los últimos `long_window` partidos
+                 EN LOS QUE EL JUGADOR PARTICIPÓ.
+
+    `matches` debe venir pre-filtrado (is_recorded=True) y ordenado por
+    played_at desc."""
+    short_total = 0
+    long_total = 0
+    long_count = 0
+    short_seen = 0
+    for m in matches:
+        if _in_match(pid, m):
+            score = _perf_score(pid, m)
+            if short_seen < short_window:
+                short_total += score
+            if long_count < long_window:
+                long_total += score; long_count += 1
+        short_seen += 1
+        if short_seen >= short_window and long_count >= long_window:
+            break
+    return short_total, long_total
+
+def trends_snapshot(db, pids, exclude_match_id=None):
+    q = db.query(Match).filter(Match.is_recorded==True)
+    if exclude_match_id is not None:
+        q = q.filter(Match.id != exclude_match_id)
+    matches = q.order_by(Match.played_at.desc()).all()
     out = {}
     for pid in pids:
-        total, count = 0, 0
-        long_total, long_count = 0, 0
-        for m in matches:
-            if _in_match(pid, m):
-                score = _perf_score(pid, m)
-                if count < lookback:
-                    total += score; count += 1
-                if long_count < long_lookback:
-                    long_total += score; long_count += 1
-                if count >= lookback and long_count >= long_lookback:
-                    break
-        out[pid] = {"trend": _trend(total), "score": total,
+        short_total, long_total = player_trend_scores(pid, matches)
+        out[pid] = {"trend": _trend(short_total), "score": short_total,
                     "long_trend": _long_trend(long_total), "long_score": long_total}
     return out
 
@@ -563,14 +583,8 @@ def generate_teams(req: TeamGenRequest, db=Depends(get_session)):
     if len(players) != 10: raise HTTPException(400, "IDs inválidos")
     all_recent = db.query(Match).filter(Match.is_recorded==True).order_by(Match.played_at.desc()).all()
     def get_player_trends(pid):
-        total, count, long_total, long_count = 0, 0, 0, 0
-        for m in all_recent:
-            if _in_match(pid, m):
-                score = _perf_score(pid, m)
-                if count < 4: total += score; count += 1
-                if long_count < 8: long_total += score; long_count += 1
-                if count >= 4 and long_count >= 8: break
-        return _trend(total), _long_trend(long_total)
+        short_total, long_total = player_trend_scores(pid, all_recent)
+        return _trend(short_total), _long_trend(long_total)
     ovrs = {p.id: compute_combined_with_trend(p, *get_player_trends(p.id), db) for p in players}
     ATTRS = ["shot", "passing", "defense", "vision", "stamina", "speed"]
     attr_vals = {}
@@ -642,14 +656,8 @@ def predict_result(req: PredictRequest, db=Depends(get_session)):
     players = {p.id: p for p in db.query(Player).filter(Player.id.in_(all_ids)).all()}
     recorded = db.query(Match).filter(Match.is_recorded==True).order_by(Match.played_at.desc()).all()
     def get_trends(pid):
-        total, count, long_total, long_count = 0, 0, 0, 0
-        for m in recorded:
-            if _in_match(pid, m):
-                score = _perf_score(pid, m)
-                if count < 4: total += score; count += 1
-                if long_count < 8: long_total += score; long_count += 1
-                if count >= 4 and long_count >= 8: break
-        return _trend(total), _long_trend(long_total)
+        short_total, long_total = player_trend_scores(pid, recorded)
+        return _trend(short_total), _long_trend(long_total)
     ovrs = {pid: compute_combined_with_trend(players[pid], *get_trends(pid), db) for pid in all_ids if pid in players}
     lsyn = req.lambda_syn if req.use_synergy else 0.0
     total_a, syn_a, skill_a = team_score(db, req.team_a, lsyn, ovrs)
@@ -687,7 +695,7 @@ def record_result(mid: int, data: MatchResultIn, db=Depends(get_session)):
     m.rank_losers=csv_join(data.rank_losers) if data.rank_losers else None
     m.is_recorded=True; m.played_at=data.played_at or m.scheduled_at or datetime.utcnow()
     all_ids = (csv_split(m.team_a) or []) + (csv_split(m.team_b) or [])
-    m.trends_snapshot = json.dumps(trends_snapshot(db, all_ids, lookback=3))
+    m.trends_snapshot = json.dumps(trends_snapshot(db, all_ids, exclude_match_id=m.id))
     db.commit(); db.refresh(m); return to_match_out(m)
 
 @app.delete("/matches/{mid}")
@@ -783,18 +791,8 @@ def players_trends(lookback: int=4, db=Depends(get_session)):
     all_matches = db.query(Match).filter(Match.is_recorded==True).order_by(Match.played_at.desc()).all()
     out = []
     for p in players:
-        total, count = 0, 0
-        long_total, long_count = 0, 0
-        for m in all_matches:
-            if _in_match(p.id, m):
-                score = _perf_score(p.id, m)
-                if count < lookback:
-                    total += score; count += 1
-                if long_count < 8:
-                    long_total += score; long_count += 1
-                if count >= lookback and long_count >= 8:
-                    break
-        out.append(PlayerTrendOut(player_id=p.id, trend=_trend(total), score=total,
+        short_total, long_total = player_trend_scores(p.id, all_matches, short_window=lookback)
+        out.append(PlayerTrendOut(player_id=p.id, trend=_trend(short_total), score=short_total,
                                   long_trend=_long_trend(long_total), long_score=long_total))
     return out
 
