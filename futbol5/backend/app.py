@@ -50,6 +50,7 @@ class Player(Base):
     last_login = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    counts_in_ranking = Column(Boolean, default=True, nullable=False)
 
 class Preference(Base):
     __tablename__ = "preferences"
@@ -105,6 +106,7 @@ def _run_migrations():
     for sql in [
         "ALTER TABLE players ADD COLUMN password_hash VARCHAR",
         "ALTER TABLE players ADD COLUMN last_login TIMESTAMP",
+        "ALTER TABLE players ADD COLUMN counts_in_ranking BOOLEAN DEFAULT 1",
     ]:
         with engine.connect() as conn:
             try:
@@ -475,10 +477,13 @@ def get_players(db=Depends(get_session)):
     return [player_out(p) for p in db.query(Player).order_by(Player.name).all()]
 
 @app.get("/players/with_opinions", response_model=List[PlayerWithOpinionsOut])
-def get_players_with_opinions(db=Depends(get_session)):
+def get_players_with_opinions(ranked_only: bool = False, db=Depends(get_session)):
     out = []
     attrs = ["shot","passing","defense","vision","stamina","speed"]
-    for p in db.query(Player).order_by(Player.name).all():
+    q = db.query(Player).order_by(Player.name)
+    if ranked_only:
+        q = q.filter(Player.counts_in_ranking.isnot(False))
+    for p in q.all():
         av = admin_attr_vals(p); cv = combined_attr_vals(db, p.id, av)
         c_min, c_max = combined_attr_minmax(db, p.id, p)
         a_min = {a: getattr(p, f"{a}_min") for a in attrs}
@@ -748,6 +753,15 @@ def reset_player_password(pid: int, db=Depends(get_session), _=Depends(check_adm
     db.commit()
     return {"ok": True}
 
+@app.patch("/players/{pid}/toggle_ranking")
+def toggle_ranking(pid: int, db=Depends(get_session), _=Depends(check_admin)):
+    pl = db.query(Player).get(pid)
+    if not pl: raise HTTPException(404, "Jugador no encontrado")
+    current = pl.counts_in_ranking if pl.counts_in_ranking is not None else True
+    pl.counts_in_ranking = not current
+    db.commit()
+    return {"ok": True, "counts_in_ranking": pl.counts_in_ranking}
+
 @app.post("/players/{pid}/ping")
 def player_ping(pid: int, db=Depends(get_session)):
     pl = db.query(Player).get(pid)
@@ -782,6 +796,7 @@ def admin_participation(db=Depends(get_session)):
             "last_login": p.last_login.isoformat() if p.last_login else None,
             "created_at": p.created_at.isoformat() if p.created_at else None,
             "has_password": p.password_hash is not None,
+            "counts_in_ranking": p.counts_in_ranking if p.counts_in_ranking is not None else True,
         })
     return result
 
@@ -797,7 +812,7 @@ def players_trends(lookback: int=4, db=Depends(get_session)):
     return out
 
 @app.get("/stats/season", response_model=List[PlayerSeasonStat])
-def season_stats(year: int | None = None, date_from: str | None = None, date_to: str | None = None, db=Depends(get_session)):
+def season_stats(year: int | None = None, date_from: str | None = None, date_to: str | None = None, ranked_only: bool = False, db=Depends(get_session)):
     q = db.query(Match).filter(Match.is_recorded==True)
     if year:
         q = q.filter(extract('year', Match.played_at) == year)
@@ -807,6 +822,8 @@ def season_stats(year: int | None = None, date_from: str | None = None, date_to:
         q = q.filter(Match.played_at <= datetime.fromisoformat(date_to))
     matches = q.all()
     players = db.query(Player).all()
+    if ranked_only:
+        players = [p for p in players if p.counts_in_ranking is not False]
     out = []
     for p in players:
         gp = wins = losses = draws = perf = 0
