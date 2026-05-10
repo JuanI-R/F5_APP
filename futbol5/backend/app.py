@@ -124,20 +124,7 @@ def _run_migrations():
         "ALTER TABLE players ADD COLUMN last_login TIMESTAMP",
         "ALTER TABLE players ADD COLUMN counts_in_ranking BOOLEAN DEFAULT 1",
         "ALTER TABLE matches ADD COLUMN voting_deadline TIMESTAMP",
-        """CREATE TABLE IF NOT EXISTS match_votes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            match_id INTEGER NOT NULL REFERENCES matches(id),
-            voter_player_id INTEGER NOT NULL REFERENCES players(id),
-            target_team VARCHAR NOT NULL,
-            rank_1 INTEGER NOT NULL REFERENCES players(id),
-            rank_2 INTEGER NOT NULL REFERENCES players(id),
-            rank_3 INTEGER NOT NULL REFERENCES players(id),
-            rank_4 INTEGER NOT NULL REFERENCES players(id),
-            rank_5 INTEGER NOT NULL REFERENCES players(id),
-            voted_by_admin BOOLEAN DEFAULT 0,
-            submitted_at TIMESTAMP,
-            UNIQUE(match_id, voter_player_id)
-        )""",
+        # match_votes is created by create_all(); this is a no-op fallback for SQLite only
     ]:
         with engine.connect() as conn:
             try:
@@ -827,8 +814,9 @@ def pending_votes(player_id: int, db=Depends(get_session)):
     for m in played:
         if not m.played_at:
             continue
-        deadline = m.voting_deadline or (next_wednesday_after(m.played_at) if m.played_at else None)
-        if not deadline or now > deadline:
+        if not m.voting_deadline:
+            continue
+        if now > m.voting_deadline:
             continue
         all_ids = (csv_split(m.team_a) or []) + (csv_split(m.team_b) or [])
         if player_id not in all_ids:
@@ -844,7 +832,7 @@ def submit_vote(mid: int, data: MatchVoteIn, is_admin: bool = Depends(get_admin_
     if not m.is_recorded: raise HTTPException(400, "El partido aún no tiene resultado")
     if m.winner_team == "D": raise HTTPException(400, "No se vota en partidos empatados")
 
-    if m.voting_deadline and datetime.utcnow() > m.voting_deadline:
+    if not m.voting_deadline or datetime.utcnow() > m.voting_deadline:
         raise HTTPException(400, "El período de votación ya cerró")
 
     team_a = csv_split(m.team_a) or []
