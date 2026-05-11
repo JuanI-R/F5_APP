@@ -788,7 +788,9 @@ async def generate_teams_ai(req: TeamGenRequest, db=Depends(get_session)):
 
         wins = results.count("G"); total = len(results)
         win_pct = round(wins / total * 100) if total else None
-        streak_str = "".join(results) if results else "sin partidos"
+        streak_joined = "".join(results)
+        streak_str = streak_joined if results else "sin partidos"
+        consec_losses = len(streak_joined) - len(streak_joined.lstrip("P"))
 
         trend_label = {"up2": "muy buena racha individual", "up1": "buena racha individual",
                        "flat": "racha individual normal", "down1": "mala racha individual",
@@ -799,7 +801,7 @@ async def generate_teams_ai(req: TeamGenRequest, db=Depends(get_session)):
             "ovr": ovr, "eff": eff, "rng": rng,
             "trend_label": trend_label,
             "win_pct": win_pct, "streak_str": streak_str, "total_matches": total,
-            "consec_losses": len(results) - len(results.lstrip("P")) if results else 0,
+            "consec_losses": consec_losses,
         })
 
     player_data.sort(key=lambda d: d["ovr"], reverse=True)
