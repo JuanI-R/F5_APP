@@ -758,48 +758,149 @@ async def generate_teams_ai(req: TeamGenRequest, db=Depends(get_session)):
     all_recent = db.query(Match).filter(Match.is_recorded==True).order_by(Match.played_at.desc()).all()
     ATTRS = ["shot", "passing", "defense", "vision", "stamina", "speed"]
 
+    # --- Build per-player stats + history ---
     ovrs: Dict[int, float] = {}
-    player_lines = []
+    player_map: Dict[int, Player] = {p.id: p for p in players}
+    player_data: list[dict] = []
+
+    HIST_WINDOW = 10  # partidos para calcular racha de victorias
+
     for p in players:
         short_t, long_t = player_trend_scores(p.id, all_recent)
         trend = _trend(short_t); ltrend = _long_trend(long_t)
         factor = max(0.0, min(1.0, STREAK_FACTORS.get(trend, 0.50) + LONG_TREND_DELTA.get(ltrend, 0.0)))
         op_min, op_max = combined_attr_minmax(db, p.id, p)
         eff = {a: round(op_min[a] + factor * (op_max[a] - op_min[a]), 1) for a in ATTRS}
+        rng = {a: f"{op_min[a]:.1f}-{op_max[a]:.1f}" for a in ATTRS}
         ovr = sum(eff[a] * FIELD_WEIGHTS[a] for a in ATTRS)
         ovrs[p.id] = ovr
-        gk = " [ARQUERO]" if p.is_goalkeeper else ""
-        trend_str = trend + (f"/largo:{ltrend}" if ltrend != "flat" else "")
-        player_lines.append(
-            f"  ID={p.id} {p.name}{gk}: OVR={ovr:.1f} | "
-            f"pase={eff['passing']} remate={eff['shot']} vel={eff['speed']} "
-            f"def={eff['defense']} vis={eff['vision']} res={eff['stamina']} | racha={trend_str}"
+
+        # Win/loss history
+        results = []
+        for m in all_recent:
+            if not m.winner_team or m.winner_team == "D": continue
+            ta = csv_split(m.team_a) or []; tb = csv_split(m.team_b) or []
+            if p.id in ta:
+                results.append("G" if m.winner_team == "A" else "P")
+            elif p.id in tb:
+                results.append("G" if m.winner_team == "B" else "P")
+            if len(results) >= HIST_WINDOW: break
+
+        wins = results.count("G"); total = len(results)
+        win_pct = round(wins / total * 100) if total else None
+        streak_str = "".join(results) if results else "sin partidos"
+
+        trend_label = {"up2": "muy buena racha individual", "up1": "buena racha individual",
+                       "flat": "racha individual normal", "down1": "mala racha individual",
+                       "down2": "muy mala racha individual"}.get(trend, trend)
+
+        player_data.append({
+            "id": p.id, "name": p.name, "gk": p.is_goalkeeper,
+            "ovr": ovr, "eff": eff, "rng": rng,
+            "trend_label": trend_label,
+            "win_pct": win_pct, "streak_str": streak_str, "total_matches": total,
+            "consec_losses": len(results) - len(results.lstrip("P")) if results else 0,
+        })
+
+    player_data.sort(key=lambda d: d["ovr"], reverse=True)
+
+    # --- Pair co-occurrence in last 10 matches ---
+    pair_count: Dict[tuple, int] = {}
+    matches_checked = 0
+    for m in all_recent:
+        if matches_checked >= HIST_WINDOW: break
+        if not _in_match(ids[0], m) and not any(_in_match(i, m) for i in ids): continue
+        ta = set(csv_split(m.team_a) or []); tb = set(csv_split(m.team_b) or [])
+        for i in ids:
+            for j in ids:
+                if i >= j: continue
+                if (i in ta and j in ta) or (i in tb and j in tb):
+                    pair_count[(i, j)] = pair_count.get((i, j), 0) + 1
+        matches_checked += 1
+
+    frequent_pairs = [(player_map[i].name, player_map[j].name, cnt)
+                      for (i, j), cnt in pair_count.items() if cnt >= 6]
+    frequent_pairs.sort(key=lambda x: -x[2])
+
+    # --- Format player blocks ---
+    player_blocks = []
+    for d in player_data:
+        wp = f"{d['win_pct']}% victorias en sus últimos {d['total_matches']} partidos" if d["win_pct"] is not None else "sin historial"
+        consec = f" ⚠️ viene de perder {d['consec_losses']} seguidos" if d["consec_losses"] >= 4 else ""
+        player_blocks.append(
+            f"  [{d['id']}] {d['name']}{' (ARQUERO)' if d['gk'] else ''}\n"
+            f"      OVR hoy: {d['ovr']:.1f}  |  {d['trend_label']}\n"
+            f"      pase:        {d['eff']['passing']:4.1f}  (rango: {d['rng']['passing']})\n"
+            f"      remate:      {d['eff']['shot']:4.1f}  (rango: {d['rng']['shot']})\n"
+            f"      velocidad:   {d['eff']['speed']:4.1f}  (rango: {d['rng']['speed']})\n"
+            f"      defensa:     {d['eff']['defense']:4.1f}  (rango: {d['rng']['defense']})\n"
+            f"      vision:      {d['eff']['vision']:4.1f}  (rango: {d['rng']['vision']})\n"
+            f"      resistencia: {d['eff']['stamina']:4.1f}  (rango: {d['rng']['stamina']})\n"
+            f"      historial:   {d['streak_str']} → {wp}{consec}"
         )
-    player_lines.sort(key=lambda l: float(l.split("OVR=")[1].split(" ")[0]), reverse=True)
 
-    prompt = f"""Sos el sistema de generación de equipos para un grupo de fútbol 5 semanal.
-Dividí estos 10 jugadores en dos equipos de 5 buscando el partido más parejo posible.
+    pair_section = "\n".join(f"  {a} + {b}: juntos en {c} de los últimos {HIST_WINDOW} partidos" for a, b, c in frequent_pairs) \
+                   or "  (sin pares frecuentes detectados)"
 
-JUGADORES (de mayor a menor OVR actual):
-{chr(10).join(player_lines)}
+    # --- Build prompt ---
+    prompt = f"""Sos un experto en fútbol 5 (5 vs 5 indoor/outdoor). Dividí exactamente estos 10 jugadores en dos equipos de 5 que produzcan el partido más parejo posible.
 
-REGLAS PARA FÚTBOL 5:
-- Pase y remate al arco son los atributos más decisivos para el juego colectivo
-- Un equipo con 2+ jugadores con pase < 5.0 queda estructuralmente débil (no puede circular la pelota)
-- Distribuí los 3 mejores jugadores entre ambos equipos, nunca los 3 juntos
-- OVR total de ambos equipos debe ser lo más similar posible
-- Si hay [ARQUERO], intentá uno por equipo
+═══════════════════════════════════════
+ JUGADORES (de mayor a menor OVR hoy)
+═══════════════════════════════════════
+{chr(10).join(player_blocks)}
 
-IDs disponibles: {sorted(ids)}
+═══════════════════════════════════════
+ QUÉ SIGNIFICA CADA ATRIBUTO EN FÚTBOL 5
+═══════════════════════════════════════
+- PASE: circular la pelota, hacer paredes y dar asistencias. Sin al menos 3 pasadores (≥5.0) el equipo no puede armar juego.
+- REMATE: precisión y potencia al arco. Sin 2 rematadores (≥6.0) por equipo, no convierte.
+- VELOCIDAD: pressing, desmarques, contragolpe. Si los 3 más rápidos van juntos, dominan físicamente al rival.
+- DEFENSA: recuperación y cobertura. Importante pero secundario en F5 ofensivo.
+- VISIÓN: lectura del juego, pases filtrados. Complementa al pase.
+- RESISTENCIA: rendimiento en la segunda mitad. Baja resistencia = cansancio y goles en contra al final.
 
-Respondé ÚNICAMENTE con JSON válido, sin texto adicional:
-{{"team_a": [id1,id2,id3,id4,id5], "team_b": [id6,id7,id8,id9,id10], "reasoning": "2-3 oraciones en español explicando por qué este armado es el más parejo"}}"""
+El OVR ya incorpora la racha individual: alguien con "muy mala racha individual" está jugando cerca de su mínimo votado.
+El rango muestra el piso y techo real según las opiniones del grupo.
+El historial G/P muestra resultados de equipo (G=ganó, P=perdió) de más reciente a más antiguo.
+
+═══════════════════════════════════════
+ PARES QUE SIEMPRE JUEGAN JUNTOS
+═══════════════════════════════════════
+{pair_section}
+Separalos para darle más variedad y dinamismo al grupo.
+
+═══════════════════════════════════════
+ CRITERIOS DE BALANCE — verificá TODOS
+═══════════════════════════════════════
+1. OVR TOTAL: diferencia mínima entre equipos (idealmente < 8 puntos).
+2. TOP JUGADORES: los 3 mejores por OVR no pueden ir todos juntos. Máximo 2 del top-3 por equipo.
+3. PASE: al menos 3 jugadores con pase ≥ 5.0 en cada equipo.
+4. REMATE: al menos 2 jugadores con remate ≥ 6.0 en cada equipo.
+5. VELOCIDAD: suma similar entre equipos (diferencia < 5). No concentres a los 3 más rápidos juntos.
+6. RESISTENCIA: suma similar entre equipos.
+7. ARQUERO: si hay jugador marcado como ARQUERO, uno por equipo.
+8. HISTORIAL: si alguien viene de perder 4+ partidos seguidos (marcado con ⚠️), intentá darle compañeros ligeramente más fuertes para equilibrar su racha, sin romper los otros criterios.
+9. VARIEDAD: separá los pares que siempre juegan juntos.
+
+═══════════════════════════════════════
+ INSTRUCCIONES
+═══════════════════════════════════════
+Analizá internamente los criterios y elegí la mejor división.
+Respondé ÚNICAMENTE con JSON válido, sin texto antes ni después:
+
+{{"team_a": [id, id, id, id, id], "team_b": [id, id, id, id, id], "reasoning": "2-3 oraciones en español explicando por qué este armado cumple los criterios clave"}}
+
+IDs disponibles (usá exactamente estos 10): {sorted(ids)}"""
 
     client = AsyncGroq(api_key=api_key)
     msg = await client.chat.completions.create(
         model="llama-3.3-70b-versatile",
-        max_tokens=512,
-        messages=[{"role": "user", "content": prompt}]
+        max_tokens=1024,
+        messages=[
+            {"role": "system", "content": "Sos un experto en balance de equipos deportivos. Respondés ÚNICAMENTE con JSON válido, sin texto adicional."},
+            {"role": "user", "content": prompt}
+        ]
     )
     raw = msg.choices[0].message.content.strip()
     m = re.search(r'\{.*\}', raw, re.DOTALL)
