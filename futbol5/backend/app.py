@@ -6,7 +6,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
-import itertools, json, os, hashlib, math
+import itertools, json, os, hashlib, math, re
+from groq import AsyncGroq
 
 from dotenv import load_dotenv
 load_dotenv()  # carga .env si existe (desarrollo local; en Railway se usan env vars del panel)
@@ -315,6 +316,9 @@ class TeamGenResponse(BaseModel):
     team_a: List[int]; team_b: List[int]
     score_diff: float; syn_sum: float; skill_sum_a: float; skill_sum_b: float
     option_num: int = 1
+
+class AITeamGenResponse(TeamGenResponse):
+    reasoning: str = ""
 
 class PredictRequest(BaseModel):
     team_a: List[int]; team_b: List[int]; lambda_syn: float = 10.0; use_synergy: bool = True
@@ -739,6 +743,85 @@ def generate_teams(req: TeamGenRequest, db=Depends(get_session)):
                         skill_sum_a=sk_a, skill_sum_b=sk_b, option_num=i+1)
         for i, (_, (ta, tb, diff, syn_sum, sk_a, sk_b)) in enumerate(top)
     ]
+
+@app.post("/generate_teams_ai", response_model=AITeamGenResponse)
+async def generate_teams_ai(req: TeamGenRequest, db=Depends(get_session)):
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        raise HTTPException(500, "GROQ_API_KEY no configurada en el servidor")
+
+    ids = req.player_ids
+    if len(ids) != 10: raise HTTPException(400, "Debes enviar exactamente 10 jugadores")
+    players = db.query(Player).filter(Player.id.in_(ids)).all()
+    if len(players) != 10: raise HTTPException(400, "IDs inválidos")
+
+    all_recent = db.query(Match).filter(Match.is_recorded==True).order_by(Match.played_at.desc()).all()
+    ATTRS = ["shot", "passing", "defense", "vision", "stamina", "speed"]
+
+    ovrs: Dict[int, float] = {}
+    player_lines = []
+    for p in players:
+        short_t, long_t = player_trend_scores(p.id, all_recent)
+        trend = _trend(short_t); ltrend = _long_trend(long_t)
+        factor = max(0.0, min(1.0, STREAK_FACTORS.get(trend, 0.50) + LONG_TREND_DELTA.get(ltrend, 0.0)))
+        op_min, op_max = combined_attr_minmax(db, p.id, p)
+        eff = {a: round(op_min[a] + factor * (op_max[a] - op_min[a]), 1) for a in ATTRS}
+        ovr = sum(eff[a] * FIELD_WEIGHTS[a] for a in ATTRS)
+        ovrs[p.id] = ovr
+        gk = " [ARQUERO]" if p.is_goalkeeper else ""
+        trend_str = trend + (f"/largo:{ltrend}" if ltrend != "flat" else "")
+        player_lines.append(
+            f"  ID={p.id} {p.name}{gk}: OVR={ovr:.1f} | "
+            f"pase={eff['passing']} remate={eff['shot']} vel={eff['speed']} "
+            f"def={eff['defense']} vis={eff['vision']} res={eff['stamina']} | racha={trend_str}"
+        )
+    player_lines.sort(key=lambda l: float(l.split("OVR=")[1].split(" ")[0]), reverse=True)
+
+    prompt = f"""Sos el sistema de generación de equipos para un grupo de fútbol 5 semanal.
+Dividí estos 10 jugadores en dos equipos de 5 buscando el partido más parejo posible.
+
+JUGADORES (de mayor a menor OVR actual):
+{chr(10).join(player_lines)}
+
+REGLAS PARA FÚTBOL 5:
+- Pase y remate al arco son los atributos más decisivos para el juego colectivo
+- Un equipo con 2+ jugadores con pase < 5.0 queda estructuralmente débil (no puede circular la pelota)
+- Distribuí los 3 mejores jugadores entre ambos equipos, nunca los 3 juntos
+- OVR total de ambos equipos debe ser lo más similar posible
+- Si hay [ARQUERO], intentá uno por equipo
+
+IDs disponibles: {sorted(ids)}
+
+Respondé ÚNICAMENTE con JSON válido, sin texto adicional:
+{{"team_a": [id1,id2,id3,id4,id5], "team_b": [id6,id7,id8,id9,id10], "reasoning": "2-3 oraciones en español explicando por qué este armado es el más parejo"}}"""
+
+    client = AsyncGroq(api_key=api_key)
+    msg = await client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        max_tokens=512,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    raw = msg.choices[0].message.content.strip()
+    m = re.search(r'\{.*\}', raw, re.DOTALL)
+    if not m: raise HTTPException(500, "La IA no devolvió JSON válido")
+    try:
+        result = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        raise HTTPException(500, "La IA devolvió JSON malformado")
+
+    team_a = [int(x) for x in result["team_a"]]
+    team_b = [int(x) for x in result["team_b"]]
+    if set(team_a + team_b) != set(ids) or len(team_a) != 5 or len(team_b) != 5:
+        raise HTTPException(500, "La IA devolvió equipos inválidos — intentá de nuevo")
+
+    sk_a = sum(ovrs[i] for i in team_a)
+    sk_b = sum(ovrs[i] for i in team_b)
+    return AITeamGenResponse(
+        team_a=team_a, team_b=team_b,
+        score_diff=round(abs(sk_a - sk_b), 2), syn_sum=0.0,
+        skill_sum_a=round(sk_a, 2), skill_sum_b=round(sk_b, 2),
+        option_num=1, reasoning=result.get("reasoning", "")
+    )
 
 @app.post("/predict_result", response_model=PredictResponse)
 def predict_result(req: PredictRequest, db=Depends(get_session)):
