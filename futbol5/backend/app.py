@@ -52,6 +52,7 @@ class Player(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     counts_in_ranking = Column(Boolean, default=True, nullable=False)
+    is_guest = Column(Boolean, default=False, nullable=False)
 
 class Preference(Base):
     __tablename__ = "preferences"
@@ -124,6 +125,7 @@ def _run_migrations():
         "ALTER TABLE players ADD COLUMN password_hash VARCHAR",
         "ALTER TABLE players ADD COLUMN last_login TIMESTAMP",
         "ALTER TABLE players ADD COLUMN counts_in_ranking BOOLEAN DEFAULT 1",
+        "ALTER TABLE players ADD COLUMN is_guest BOOLEAN DEFAULT 0",
         "ALTER TABLE matches ADD COLUMN voting_deadline TIMESTAMP",
         # match_votes is created by create_all(); this is a no-op fallback for SQLite only
     ]:
@@ -223,6 +225,7 @@ class PlayerIn(BaseModel):
 
 class PlayerOut(PlayerIn):
     id: int; overall_expected: float
+    is_guest: bool = False
     password_hash: str | None = None
     last_login: datetime | None = None
     created_at: datetime | None = None
@@ -266,6 +269,8 @@ class OpinionOut(OpinionIn):
 
 class MatchScheduleIn(BaseModel):
     team_a: List[int]; team_b: List[int]; scheduled_at: datetime | None = None
+    guest_names_a: List[str] = []
+    guest_names_b: List[str] = []
 
 class MatchOut(BaseModel):
     id: int; team_a: List[int]; team_b: List[int]
@@ -538,6 +543,32 @@ def team_score(db, team, lambda_syn, ovrs):
     syn = sum((pref_weight(db,a,b)+pref_weight(db,b,a))/2.0 for a,b in itertools.combinations(team,2))
     return skill + lambda_syn*syn, syn, skill
 
+def _create_guest(db, name: str) -> Player:
+    name = name.strip()
+    if not name:
+        raise HTTPException(400, "El nombre del invitado no puede estar vacío")
+    seq = db.query(PlayerIdSequence).filter(PlayerIdSequence.id==1).first()
+    if not seq:
+        seq = PlayerIdSequence(id=1, max_id=0); db.add(seq); db.flush()
+    current_max = db.query(func.max(Player.id)).scalar() or 0
+    new_id = max(seq.max_id, current_max) + 1
+    seq.max_id = new_id
+    # Ensure guest name is unique (append suffix if collision)
+    base_name = name
+    suffix = 1
+    while db.query(Player).filter(Player.name == name).first():
+        name = f"{base_name} ({suffix})"
+        suffix += 1
+    guest = Player(
+        id=new_id, name=name, is_guest=True,
+        shot_min=5.0, shot_max=5.0, passing_min=5.0, passing_max=5.0,
+        defense_min=5.0, defense_max=5.0, vision_min=5.0, vision_max=5.0,
+        stamina_min=5.0, stamina_max=5.0, speed_min=5.0, speed_max=5.0,
+    )
+    db.add(guest)
+    db.flush()
+    return guest
+
 def to_match_out(m):
     trends = None
     if m.trends_snapshot:
@@ -558,7 +589,7 @@ def player_out(p):
         shot_min=p.shot_min, shot_max=p.shot_max, passing_min=p.passing_min, passing_max=p.passing_max,
         defense_min=p.defense_min, defense_max=p.defense_max, vision_min=p.vision_min, vision_max=p.vision_max,
         stamina_min=p.stamina_min, stamina_max=p.stamina_max, speed_min=p.speed_min, speed_max=p.speed_max,
-        overall_expected=compute_overall(p))
+        overall_expected=compute_overall(p), is_guest=bool(p.is_guest or False))
 
 # ---- ROUTES: PLAYERS ----
 @app.get("/players", response_model=List[PlayerOut])
@@ -570,6 +601,7 @@ def get_players_with_opinions(ranked_only: bool = False, db=Depends(get_session)
     out = []
     attrs = ["shot","passing","defense","vision","stamina","speed"]
     q = db.query(Player).order_by(Player.name)
+    q = q.filter(Player.is_guest.isnot(True))
     if ranked_only:
         q = q.filter(Player.counts_in_ranking.isnot(False))
     for p in q.all():
@@ -949,8 +981,15 @@ def predict_result(req: PredictRequest, db=Depends(get_session)):
 # ---- ROUTES: MATCHES ----
 @app.post("/matches", response_model=MatchOut)
 def schedule_match(data: MatchScheduleIn, db=Depends(get_session)):
-    if len(data.team_a)!=5 or len(data.team_b)!=5: raise HTTPException(400, "Cada equipo debe tener 5 jugadores")
-    m = Match(team_a=csv_join(data.team_a), team_b=csv_join(data.team_b),
+    total_a = len(data.team_a) + len(data.guest_names_a)
+    total_b = len(data.team_b) + len(data.guest_names_b)
+    if total_a != 5 or total_b != 5:
+        raise HTTPException(400, "Cada equipo debe tener 5 jugadores (incluyendo invitados)")
+    guests_a = [_create_guest(db, name) for name in data.guest_names_a]
+    guests_b = [_create_guest(db, name) for name in data.guest_names_b]
+    all_a = list(data.team_a) + [g.id for g in guests_a]
+    all_b = list(data.team_b) + [g.id for g in guests_b]
+    m = Match(team_a=csv_join(all_a), team_b=csv_join(all_b),
               scheduled_at=data.scheduled_at or next_thursday(), is_recorded=False)
     db.add(m); db.commit(); db.refresh(m); return to_match_out(m)
 
@@ -991,6 +1030,9 @@ def get_admin_status(x_admin_pin: str = Header(None)) -> bool:
 @app.get("/matches/votes/pending")
 def pending_votes(player_id: int, db=Depends(get_session)):
     now = datetime.utcnow()
+    voter = db.query(Player).get(player_id)
+    if not voter or voter.is_guest:
+        return {"count": 0, "match_ids": []}
     played = db.query(Match).filter(Match.is_recorded == True,
                                      Match.winner_team.in_(["A", "B"])).all()
     voted_match_ids = {
@@ -1026,6 +1068,10 @@ def submit_vote(mid: int, data: MatchVoteIn, is_admin: bool = Depends(get_admin_
     all_participants = team_a + team_b
     if data.voter_player_id not in all_participants:
         raise HTTPException(422, "El jugador no participó en este partido")
+
+    voter_player = db.query(Player).get(data.voter_player_id)
+    if voter_player and voter_player.is_guest:
+        raise HTTPException(422, "Los invitados no pueden votar")
 
     # Determine rival team
     if data.voter_player_id in team_a:
@@ -1073,7 +1119,8 @@ def get_match_votes(mid: int, player_id: int | None = None,
     deadline = m.voting_deadline
     team_a = csv_split(m.team_a) or []
     team_b = csv_split(m.team_b) or []
-    total_participants = len(team_a) + len(team_b)
+    guest_ids = {p.id for p in db.query(Player).filter(Player.is_guest.is_(True)).all()}
+    total_participants = len([pid for pid in (team_a + team_b) if pid not in guest_ids])
 
     votes = db.query(MatchVote).filter(MatchVote.match_id == mid).all()
     votes_cast = len(votes)
@@ -1117,7 +1164,8 @@ def get_match_votes(mid: int, player_id: int | None = None,
         voted_ids = {v.voter_player_id for v in votes}
         pending_voters = [
             {"player_id": pid, "name": player_map.get(pid, f"#{pid}")}
-            for pid in (team_a + team_b) if pid not in voted_ids
+            for pid in (team_a + team_b)
+            if pid not in voted_ids and pid not in guest_ids
         ]
 
     return MatchVotesOut(
@@ -1190,7 +1238,7 @@ def player_ping(pid: int, db=Depends(get_session)):
 
 @app.get("/admin/participation")
 def admin_participation(db=Depends(get_session)):
-    players = db.query(Player).order_by(Player.name).all()
+    players = db.query(Player).filter(Player.is_guest.isnot(True)).order_by(Player.name).all()
     opinions = db.query(Opinion).all()
     # actor_user_id is a user.id, not a player.id — build a lookup to translate
     user_to_player = {u.id: u.player_id for u in db.query(User).filter(User.player_id != None).all()}
@@ -1220,7 +1268,7 @@ def admin_participation(db=Depends(get_session)):
 
 @app.get("/players/trends", response_model=List[PlayerTrendOut])
 def players_trends(lookback: int=4, db=Depends(get_session)):
-    players = db.query(Player).all()
+    players = db.query(Player).filter(Player.is_guest.isnot(True)).all()
     all_matches = db.query(Match).filter(Match.is_recorded==True).order_by(Match.played_at.desc()).all()
     out = []
     for p in players:
@@ -1239,7 +1287,7 @@ def season_stats(year: int | None = None, date_from: str | None = None, date_to:
     if date_to:
         q = q.filter(Match.played_at <= datetime.fromisoformat(date_to))
     matches = q.all()
-    players = db.query(Player).all()
+    players = db.query(Player).filter(Player.is_guest.isnot(True)).all()
     if ranked_only:
         players = [p for p in players if p.counts_in_ranking is not False]
     out = []
@@ -1265,6 +1313,9 @@ def season_stats(year: int | None = None, date_from: str | None = None, date_to:
 
 @app.get("/players/{pid}/history", response_model=List[MatchHistoryEntry])
 def player_history(pid: int, db=Depends(get_session)):
+    pl = db.query(Player).get(pid)
+    if not pl or pl.is_guest:
+        raise HTTPException(404, "Jugador no encontrado")
     matches = db.query(Match).filter(Match.is_recorded==True).order_by(Match.played_at.desc()).all()
     out = []
     for m in matches:
@@ -1282,8 +1333,12 @@ def player_history(pid: int, db=Depends(get_session)):
 
 @app.get("/players/{pid}/chemistry", response_model=ChemistryOut)
 def player_chemistry(pid: int, db=Depends(get_session)):
+    pl = db.query(Player).get(pid)
+    if not pl or pl.is_guest:
+        raise HTTPException(404, "Jugador no encontrado")
     matches = db.query(Match).filter(Match.is_recorded==True).all()
     player_map = {p.id: p.name for p in db.query(Player).all()}
+    guest_ids = {p.id for p in db.query(Player).filter(Player.is_guest.is_(True)).all()}
     partner_stats: Dict[int, list] = {}
     rival_stats: Dict[int, list] = {}
     for m in matches:
@@ -1292,10 +1347,11 @@ def player_chemistry(pid: int, db=Depends(get_session)):
         elif pid in tb: my_team, opp_team, won = tb, ta, m.winner_team=='B'
         else: continue
         for pid2 in my_team:
-            if pid2 == pid: continue
+            if pid2 == pid or pid2 in guest_ids: continue
             s = partner_stats.setdefault(pid2, [0,0]); s[0]+=1
             if won: s[1]+=1
         for pid2 in opp_team:
+            if pid2 in guest_ids: continue
             s = rival_stats.setdefault(pid2, [0,0]); s[0]+=1
             if won: s[1]+=1
     def best(stats, highest):
@@ -1315,6 +1371,7 @@ def player_chemistry(pid: int, db=Depends(get_session)):
 def player_partners(pid: int, min_games: int = 2, db=Depends(get_session)):
     matches = db.query(Match).filter(Match.is_recorded==True).all()
     player_map = {p.id: p.name for p in db.query(Player).all()}
+    guest_ids = {p.id for p in db.query(Player).filter(Player.is_guest.is_(True)).all()}
     partner_stats: Dict[int, list] = {}  # pid2 -> [gp, wins]
     rival_stats: Dict[int, list] = {}
     for m in matches:
@@ -1324,11 +1381,12 @@ def player_partners(pid: int, min_games: int = 2, db=Depends(get_session)):
         else: continue
         draw = m.winner_team == 'D'
         for pid2 in my_team:
-            if pid2 == pid: continue
+            if pid2 == pid or pid2 in guest_ids: continue
             s = partner_stats.setdefault(pid2, [0,0,0]); s[0]+=1
             if won: s[1]+=1
             if draw: s[2]+=1
         for pid2 in opp_team:
+            if pid2 in guest_ids: continue
             s = rival_stats.setdefault(pid2, [0,0,0]); s[0]+=1
             if won: s[1]+=1
             if draw: s[2]+=1
