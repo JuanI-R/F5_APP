@@ -294,6 +294,9 @@ class MatchVoteIn(BaseModel):
     voter_player_id: int
     rank: List[int] = Field(..., min_length=5, max_length=5)
 
+class ModifyVoteIn(BaseModel):
+    rank: List[int] = Field(..., min_length=5, max_length=5)
+
 class VoteAggregateEntry(BaseModel):
     player_id: int; name: str; position: int; borda_points: int
 
@@ -1180,15 +1183,12 @@ def check_admin(x_admin_pin: str = Header(None)):
         raise HTTPException(401, "PIN incorrecto")
 
 @app.put("/matches/{mid}/votes/{voter_player_id}", status_code=200)
-def modify_vote(mid: int, voter_player_id: int, data: MatchVoteIn,
+def modify_vote(mid: int, voter_player_id: int, data: ModifyVoteIn,
                 db=Depends(get_session), _: None = Depends(check_admin)):
     last = db.query(Match).filter(Match.is_recorded.is_(True)).order_by(Match.id.desc()).first()
     if not last or last.id != mid:
         raise HTTPException(400, "Solo se puede modificar el último partido")
-
-    m = db.query(Match).get(mid)
-    if not m:
-        raise HTTPException(404, "Partido no encontrado")
+    m = last
 
     vote = db.query(MatchVote).filter(
         MatchVote.match_id == mid,
