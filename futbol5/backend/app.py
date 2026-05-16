@@ -10,7 +10,7 @@ import itertools, json, os, hashlib, math, re
 from groq import AsyncGroq
 
 from dotenv import load_dotenv
-load_dotenv()  # carga .env si existe (desarrollo local; en Railway se usan env vars del panel)
+load_dotenv()  # carga .env si existe (desarrollo local; en Railwya hay se usan env vars del panel)
 
 ADMIN_PIN = os.environ.get("ADMIN_PIN", "1234")
 
@@ -292,6 +292,9 @@ class MatchResultOut(BaseModel):
 
 class MatchVoteIn(BaseModel):
     voter_player_id: int
+    rank: List[int] = Field(..., min_length=5, max_length=5)
+
+class ModifyVoteIn(BaseModel):
     rank: List[int] = Field(..., min_length=5, max_length=5)
 
 class VoteAggregateEntry(BaseModel):
@@ -1178,6 +1181,36 @@ def get_match_votes(mid: int, player_id: int | None = None,
 def check_admin(x_admin_pin: str = Header(None)):
     if x_admin_pin != ADMIN_PIN:
         raise HTTPException(401, "PIN incorrecto")
+
+@app.put("/matches/{mid}/votes/{voter_player_id}", status_code=200)
+def modify_vote(mid: int, voter_player_id: int, data: ModifyVoteIn,
+                db=Depends(get_session), _: None = Depends(check_admin)):
+    last = db.query(Match).filter(Match.is_recorded.is_(True)).order_by(Match.id.desc()).first()
+    if not last or last.id != mid:
+        raise HTTPException(400, "Solo se puede modificar el último partido")
+    m = last
+
+    vote = db.query(MatchVote).filter(
+        MatchVote.match_id == mid,
+        MatchVote.voter_player_id == voter_player_id,
+    ).first()
+    if not vote:
+        raise HTTPException(404, "El jugador no tiene voto registrado en este partido")
+
+    team_a = csv_split(m.team_a) or []
+    team_b = csv_split(m.team_b) or []
+    rival_ids = team_b if voter_player_id in team_a else team_a
+    if len(data.rank) != 5 or set(data.rank) != set(rival_ids):
+        raise HTTPException(422, f"rank debe contener exactamente los 5 jugadores del equipo rival: {rival_ids}")
+
+    vote.rank_1, vote.rank_2, vote.rank_3, vote.rank_4, vote.rank_5 = data.rank
+    vote.voted_by_admin = True
+    vote.submitted_at = datetime.utcnow()
+    db.commit()
+
+    db.refresh(m)
+    _borda_recompute(db, m)
+    return {"ok": True}
 
 @app.post("/admin/verify")
 def admin_verify(x_admin_pin: str = Header(None)):

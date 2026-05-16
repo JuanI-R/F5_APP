@@ -1,0 +1,22 @@
+name: Deploy ACP
+  
+on:
+  push:
+    branches:
+      - ACP
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - name: Pull latest code
+        run: |
+          cd ~/F5_APP
+          git fetch origin
+          git checkout ACP
+          git reset --hard origin/ACP
+
+      - name: Rebuild and restart containers
+        run: |
+          cd ~/F5_APP/futbol5
+          docker compose up --build -d
