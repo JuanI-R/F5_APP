@@ -427,7 +427,7 @@ let state = {
   me: JSON.parse(localStorage.getItem('me') || 'null'),
   tab: 'jugar',
   adminOk: localStorage.getItem('adminOk') === '1',
-  adminPin: sessionStorage.getItem('adminPin') || null,
+  adminPin: localStorage.getItem('adminPin') || null,
 };
 
 // =========================================================
@@ -2450,7 +2450,7 @@ function renderAdmin(root) {
         state.adminOk = true;
         state.adminPin = inp.value;
         localStorage.setItem('adminOk','1');
-        sessionStorage.setItem('adminPin', inp.value);
+        localStorage.setItem('adminPin', inp.value);
         toast('Acceso de admin ✓');
         renderContent();
       } catch(e) {
@@ -2466,7 +2466,7 @@ function renderAdmin(root) {
   const adminBar = h('div',{class:'admin-bar'},
     h('span',{},'⚡ Modo administrador'),
     h('button',{class:'btn btn-ghost btn-sm',onClick:()=>{
-      state.adminOk=false; state.adminPin=null; localStorage.removeItem('adminOk'); sessionStorage.removeItem('adminPin'); renderContent();
+      state.adminOk=false; state.adminPin=null; localStorage.removeItem('adminOk'); localStorage.removeItem('adminPin'); renderContent();
     }},'Salir de admin')
   );
   root.appendChild(adminBar);
