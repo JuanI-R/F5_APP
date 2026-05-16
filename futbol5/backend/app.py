@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()  # carga .env si existe (desarrollo local; en Railway se usan env vars del panel)
 
 ADMIN_PIN = os.environ.get("ADMIN_PIN", "1234")
-
+##
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float, DateTime,
     ForeignKey, UniqueConstraint, Text, Boolean, func, event, extract
