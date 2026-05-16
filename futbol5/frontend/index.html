@@ -1831,6 +1831,7 @@ async function renderHistorial(root) {
         listWrap.appendChild(h('div',{class:'empty'},h('p',{},'No hay partidos aquí')));
         return;
       }
+      const lastMatchId = matches.filter(m => m.is_recorded).reduce((max, m) => Math.max(max, m.id), 0);
       matches.forEach(m => {
         const mc = h('div', { class:'match-card' });
 
@@ -1959,6 +1960,10 @@ async function renderHistorial(root) {
             if (new Date(m.voting_deadline) > new Date()) {
               actions.appendChild(h('button',{class:'btn btn-sm',style:'background:rgba(234,179,8,.15);color:var(--yellow);border:1px solid rgba(234,179,8,.3)',
                 onClick:()=>openAdminVoteModal(m, ()=>{ load(); updateHistorialBadge(); })},'⚽ Votar por otro'));
+            }
+            if (m.id === lastMatchId) {
+              actions.appendChild(h('button',{class:'btn btn-sm',style:'background:rgba(168,85,247,.15);color:#d8b4fe;border:1px solid rgba(168,85,247,.3)',
+                onClick:()=>openModifyVoteModal(m, ()=>{ load(); })},'✏️ Modificar voto'));
             }
             actions.appendChild(h('button',{class:'btn btn-sm',style:'background:rgba(99,102,241,.15);color:#a5b4fc;border:1px solid rgba(99,102,241,.3)',
               onClick:()=>openVotesAuditModal(m)},'⚡ Ver votos'));
