@@ -14,7 +14,7 @@ jobs:
           cd ~/F5_APP
           git fetch origin
           git checkout ACP
-          git pull origin ACP
+          git reset --hard origin/ACP
 
       - name: Rebuild and restart containers
         run: |
