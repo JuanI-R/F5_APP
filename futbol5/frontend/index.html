@@ -1401,6 +1401,100 @@ async function openAdminVoteModal(match, onDone) {
   document.body.appendChild(overlay);
 }
 
+async function openModifyVoteModal(match, onDone) {
+  if (!state.adminPin) { toast('Sesión de admin expirada — ingresá el PIN en la pestaña Admin.', 'err'); return; }
+
+  let voteData;
+  try {
+    voteData = await api(`/matches/${match.id}/votes`);
+  } catch(e) { toast('Error cargando votos', 'err'); return; }
+
+  const voters = voteData.individual_votes || [];
+  if (!voters.length) { toast('No hay votos para modificar', 'err'); return; }
+
+  const teamA = match.team_a || [];
+  const teamB = match.team_b || [];
+
+  const overlay = h('div', { class:'overlay', onClick: e => { if(e.target===overlay) overlay.remove(); } });
+  const modal = h('div', { class:'modal' });
+  modal.appendChild(h('div', { class:'modal-title' },
+    h('span',{},'✏️ Modificar voto'),
+    h('button',{class:'close-btn',onClick:()=>overlay.remove()},'×')
+  ));
+  modal.appendChild(h('div',{style:'font-size:.78rem;color:var(--yellow);margin-bottom:6px'},'⚡ Modo administrador'));
+  modal.appendChild(h('div',{style:'font-size:.75rem;background:rgba(234,179,8,.1);border:1px solid rgba(234,179,8,.3);border-radius:6px;padding:8px 10px;margin-bottom:12px;color:#fbbf24'},
+    '⚠️ Esta acción reemplaza el voto del jugador y recalcula el ranking'
+  ));
+
+  modal.appendChild(h('div',{style:'font-size:.75rem;color:var(--muted2);margin-bottom:4px;font-weight:700;text-transform:uppercase'},'Modificar voto de:'));
+  const sel = h('select',{style:'width:100%;background:#1e293b;border:1px solid rgba(255,255,255,.2);border-radius:8px;padding:8px;color:#f1f5f9;font-size:.9rem;margin-bottom:14px'});
+  voters.forEach(v => {
+    sel.appendChild(h('option',{value:v.voter_player_id,style:'background:#1e293b;color:#f1f5f9'},v.voter_name));
+  });
+  modal.appendChild(sel);
+
+  const listWrap = h('div',{});
+  modal.appendChild(listWrap);
+
+  function renderForVoter(voterId) {
+    listWrap.innerHTML = '';
+    const vid = Number(voterId);
+    const voterInA = teamA.includes(vid);
+    const rivalIds = voterInA ? teamB : teamA;
+    const existingVote = voters.find(v => v.voter_player_id === vid);
+    let ranked = existingVote ? [...existingVote.rank] : [...rivalIds];
+    let dragSrcIdx = null;
+    const dropZone = h('div',{class:'rank-drop-zone',style:'margin-bottom:14px'});
+
+    function renderList() {
+      dropZone.innerHTML = '';
+      ranked.forEach((pid, idx) => {
+        const p = state.players.find(x => x.id === pid);
+        const item = h('div',{class:'rank-item',draggable:'true'});
+        const colors = ['#fbbf24','#e2e8f0','#cd7f32','var(--muted2)','var(--muted2)'];
+        item.appendChild(h('span',{style:`font-family:"Barlow Condensed",sans-serif;font-size:1.1rem;font-weight:900;color:${colors[idx]||'var(--muted)'};min-width:26px`},`${idx+1}°`));
+        item.appendChild(h('span',{style:'flex:1;font-size:.9rem'},p ? playerLabel(p) : `#${pid}`));
+        item.appendChild(h('span',{style:'color:var(--muted);font-size:1rem;cursor:grab;padding:0 4px'},'⠿'));
+        item.ondragstart = () => { dragSrcIdx = idx; setTimeout(()=>item.classList.add('dragging'),0); };
+        item.ondragend = () => { item.classList.remove('dragging'); dragSrcIdx = null; };
+        item.ondragover = e => e.preventDefault();
+        item.ondrop = e => {
+          e.preventDefault();
+          if (dragSrcIdx === null || dragSrcIdx === idx) return;
+          const moved = ranked.splice(dragSrcIdx,1)[0]; ranked.splice(idx,0,moved); renderList();
+        };
+        dropZone.appendChild(item);
+      });
+      dropZone.ondragover = e => { e.preventDefault(); dropZone.classList.add('drag-over'); };
+      dropZone.ondragleave = () => dropZone.classList.remove('drag-over');
+      dropZone.ondrop = e => { e.preventDefault(); dropZone.classList.remove('drag-over'); };
+    }
+    renderList();
+    listWrap.appendChild(dropZone);
+
+    const voterName = voters.find(v => v.voter_player_id === vid)?.voter_name || `#${vid}`;
+    const confirmBtn = h('button',{class:'btn btn-green',style:'width:100%',onClick:async()=>{
+      try {
+        await api(`/matches/${match.id}/votes/${vid}`,{method:'PUT',body:JSON.stringify({
+          rank: ranked
+        })});
+        toast(`Voto de ${voterName} actualizado ✓`);
+        overlay.remove();
+        onDone?.();
+      } catch(e) {
+        toast('Error: '+e.message,'err');
+      }
+    }},`Guardar voto de ${voterName} →`);
+    listWrap.appendChild(confirmBtn);
+  }
+
+  sel.addEventListener('change', () => renderForVoter(sel.value));
+  renderForVoter(voters[0].voter_player_id);
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+}
+
 // ---- TEAM GENERATOR ----
 function renderTeamGenerator(root) {
   const card = h('div', { class:'card' });
