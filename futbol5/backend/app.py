@@ -550,10 +550,10 @@ def _create_guest(db, name: str) -> Player:
     name = name.strip()
     if not name:
         raise HTTPException(400, "El nombre del invitado no puede estar vacío")
-    existing = db.query(Player).filter(Player.name == name, Player.is_guest.is_(True)).first()
+    existing = db.query(Player).filter(Player.name.ilike(name), Player.is_guest.is_(True)).first()
     if existing:
         return existing
-    if db.query(Player).filter(Player.name == name, Player.is_guest.isnot(True)).first():
+    if db.query(Player).filter(Player.name.ilike(name), Player.is_guest.isnot(True)).first():
         raise HTTPException(400, f"Ya existe un jugador registrado con el nombre '{name}'")
     seq = db.query(PlayerIdSequence).filter(PlayerIdSequence.id==1).first()
     if not seq:
