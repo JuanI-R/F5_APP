@@ -254,6 +254,8 @@
   .rank-item { display:flex; align-items:center; gap:8px; padding:8px 10px; background:var(--bg3); border:1px solid var(--card-border); border-radius:8px; margin-bottom:4px; cursor:grab; user-select:none; transition:opacity .15s; }
   .rank-item:last-child { margin-bottom:0; }
   .rank-item.dragging { opacity:.35; }
+  @keyframes rankSlide { 0%{background:rgba(34,197,94,.28);transform:translateY(-6px)} 60%{background:rgba(34,197,94,.1);transform:translateY(2px)} 100%{background:var(--bg3);transform:translateY(0)} }
+  .rank-item.moved { animation: rankSlide .28s ease forwards; }
   .rank-bench { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
   .rank-bench-chip { padding:5px 12px; background:var(--bg2); border:1px solid var(--card-border); border-radius:20px; color:var(--muted2); font-size:.85rem; cursor:pointer; transition:all .12s; }
   .rank-bench-chip:hover { border-color:var(--green); color:var(--green); }
@@ -1174,16 +1176,17 @@ function openVoteModal(match, onDone) {
   let dragSrcIdx = null;
   const dropZone = h('div',{class:'rank-drop-zone',style:'margin-bottom:14px'});
 
-  function renderList() {
+  function renderList(hi=-1) {
     dropZone.innerHTML = '';
     ranked.forEach((pid, idx) => {
       const p = state.players.find(x => x.id === pid);
       const item = h('div',{class:'rank-item',draggable:'true'});
+      if(idx===hi) item.classList.add('moved');
       const colors = ['#fbbf24','#e2e8f0','#cd7f32','var(--muted2)','var(--muted2)'];
       item.appendChild(h('span',{style:`font-family:"Barlow Condensed",sans-serif;font-size:1.1rem;font-weight:900;color:${colors[idx]||'var(--muted)'};min-width:26px`},`${idx+1}°`));
       item.appendChild(h('span',{style:'flex:1;font-size:.9rem'},p ? playerLabel(p) : `#${pid}`));
-      const btnUp = h('button',{style:`background:none;border:none;cursor:${idx===0?'default':'pointer'};padding:0 3px;font-size:.9rem;color:${idx===0?'var(--muted2)':'var(--muted)'};line-height:1`,onClick:e=>{e.stopPropagation();if(idx===0)return;[ranked[idx-1],ranked[idx]]=[ranked[idx],ranked[idx-1]];renderList();}},'▲');
-      const btnDn = h('button',{style:`background:none;border:none;cursor:${idx===ranked.length-1?'default':'pointer'};padding:0 3px;font-size:.9rem;color:${idx===ranked.length-1?'var(--muted2)':'var(--muted)'};line-height:1`,onClick:e=>{e.stopPropagation();if(idx===ranked.length-1)return;[ranked[idx],ranked[idx+1]]=[ranked[idx+1],ranked[idx]];renderList();}},'▼');
+      const btnUp = h('button',{style:`background:none;border:none;cursor:${idx===0?'default':'pointer'};padding:0 3px;font-size:.9rem;color:${idx===0?'var(--muted2)':'var(--muted)'};line-height:1`,onClick:e=>{e.stopPropagation();if(idx===0)return;[ranked[idx-1],ranked[idx]]=[ranked[idx],ranked[idx-1]];renderList(idx-1);}},'▲');
+      const btnDn = h('button',{style:`background:none;border:none;cursor:${idx===ranked.length-1?'default':'pointer'};padding:0 3px;font-size:.9rem;color:${idx===ranked.length-1?'var(--muted2)':'var(--muted)'};line-height:1`,onClick:e=>{e.stopPropagation();if(idx===ranked.length-1)return;[ranked[idx],ranked[idx+1]]=[ranked[idx+1],ranked[idx]];renderList(idx+1);}},'▼');
       item.appendChild(btnUp);
       item.appendChild(btnDn);
       item.appendChild(h('span',{style:'color:var(--muted);font-size:1rem;cursor:grab;padding:0 4px'},'⠿'));
@@ -1355,16 +1358,17 @@ async function openAdminVoteModal(match, onDone) {
     let dragSrcIdx = null;
     const dropZone = h('div',{class:'rank-drop-zone',style:'margin-bottom:14px'});
 
-    function renderList() {
+    function renderList(hi=-1) {
       dropZone.innerHTML = '';
       ranked.forEach((pid, idx) => {
         const p = state.players.find(x => x.id === pid);
         const item = h('div',{class:'rank-item',draggable:'true'});
+        if(idx===hi) item.classList.add('moved');
         const colors = ['#fbbf24','#e2e8f0','#cd7f32','var(--muted2)','var(--muted2)'];
         item.appendChild(h('span',{style:`font-family:"Barlow Condensed",sans-serif;font-size:1.1rem;font-weight:900;color:${colors[idx]||'var(--muted)'};min-width:26px`},`${idx+1}°`));
         item.appendChild(h('span',{style:'flex:1;font-size:.9rem'},p ? playerLabel(p) : `#${pid}`));
-        const btnUp = h('button',{style:`background:none;border:none;cursor:${idx===0?'default':'pointer'};padding:0 3px;font-size:.9rem;color:${idx===0?'var(--muted2)':'var(--muted)'};line-height:1`,onClick:e=>{e.stopPropagation();if(idx===0)return;[ranked[idx-1],ranked[idx]]=[ranked[idx],ranked[idx-1]];renderList();}},'▲');
-        const btnDn = h('button',{style:`background:none;border:none;cursor:${idx===ranked.length-1?'default':'pointer'};padding:0 3px;font-size:.9rem;color:${idx===ranked.length-1?'var(--muted2)':'var(--muted)'};line-height:1`,onClick:e=>{e.stopPropagation();if(idx===ranked.length-1)return;[ranked[idx],ranked[idx+1]]=[ranked[idx+1],ranked[idx]];renderList();}},'▼');
+        const btnUp = h('button',{style:`background:none;border:none;cursor:${idx===0?'default':'pointer'};padding:0 3px;font-size:.9rem;color:${idx===0?'var(--muted2)':'var(--muted)'};line-height:1`,onClick:e=>{e.stopPropagation();if(idx===0)return;[ranked[idx-1],ranked[idx]]=[ranked[idx],ranked[idx-1]];renderList(idx-1);}},'▲');
+        const btnDn = h('button',{style:`background:none;border:none;cursor:${idx===ranked.length-1?'default':'pointer'};padding:0 3px;font-size:.9rem;color:${idx===ranked.length-1?'var(--muted2)':'var(--muted)'};line-height:1`,onClick:e=>{e.stopPropagation();if(idx===ranked.length-1)return;[ranked[idx],ranked[idx+1]]=[ranked[idx+1],ranked[idx]];renderList(idx+1);}},'▼');
         item.appendChild(btnUp);
         item.appendChild(btnDn);
         item.appendChild(h('span',{style:'color:var(--muted);font-size:1rem;cursor:grab;padding:0 4px'},'⠿'));
@@ -1454,16 +1458,17 @@ async function openModifyVoteModal(match, onDone) {
     let dragSrcIdx = null;
     const dropZone = h('div',{class:'rank-drop-zone',style:'margin-bottom:14px'});
 
-    function renderList() {
+    function renderList(hi=-1) {
       dropZone.innerHTML = '';
       ranked.forEach((pid, idx) => {
         const p = state.players.find(x => x.id === pid);
         const item = h('div',{class:'rank-item',draggable:'true'});
+        if(idx===hi) item.classList.add('moved');
         const colors = ['#fbbf24','#e2e8f0','#cd7f32','var(--muted2)','var(--muted2)'];
         item.appendChild(h('span',{style:`font-family:"Barlow Condensed",sans-serif;font-size:1.1rem;font-weight:900;color:${colors[idx]||'var(--muted)'};min-width:26px`},`${idx+1}°`));
         item.appendChild(h('span',{style:'flex:1;font-size:.9rem'},p ? playerLabel(p) : `#${pid}`));
-        const btnUp = h('button',{style:`background:none;border:none;cursor:${idx===0?'default':'pointer'};padding:0 3px;font-size:.9rem;color:${idx===0?'var(--muted2)':'var(--muted)'};line-height:1`,onClick:e=>{e.stopPropagation();if(idx===0)return;[ranked[idx-1],ranked[idx]]=[ranked[idx],ranked[idx-1]];renderList();}},'▲');
-        const btnDn = h('button',{style:`background:none;border:none;cursor:${idx===ranked.length-1?'default':'pointer'};padding:0 3px;font-size:.9rem;color:${idx===ranked.length-1?'var(--muted2)':'var(--muted)'};line-height:1`,onClick:e=>{e.stopPropagation();if(idx===ranked.length-1)return;[ranked[idx],ranked[idx+1]]=[ranked[idx+1],ranked[idx]];renderList();}},'▼');
+        const btnUp = h('button',{style:`background:none;border:none;cursor:${idx===0?'default':'pointer'};padding:0 3px;font-size:.9rem;color:${idx===0?'var(--muted2)':'var(--muted)'};line-height:1`,onClick:e=>{e.stopPropagation();if(idx===0)return;[ranked[idx-1],ranked[idx]]=[ranked[idx],ranked[idx-1]];renderList(idx-1);}},'▲');
+        const btnDn = h('button',{style:`background:none;border:none;cursor:${idx===ranked.length-1?'default':'pointer'};padding:0 3px;font-size:.9rem;color:${idx===ranked.length-1?'var(--muted2)':'var(--muted)'};line-height:1`,onClick:e=>{e.stopPropagation();if(idx===ranked.length-1)return;[ranked[idx],ranked[idx+1]]=[ranked[idx+1],ranked[idx]];renderList(idx+1);}},'▼');
         item.appendChild(btnUp);
         item.appendChild(btnDn);
         item.appendChild(h('span',{style:'color:var(--muted);font-size:1rem;cursor:grab;padding:0 4px'},'⠿'));
