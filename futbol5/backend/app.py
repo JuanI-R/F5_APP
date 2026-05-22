@@ -550,18 +550,17 @@ def _create_guest(db, name: str) -> Player:
     name = name.strip()
     if not name:
         raise HTTPException(400, "El nombre del invitado no puede estar vacío")
+    existing = db.query(Player).filter(Player.name.ilike(name), Player.is_guest.is_(True)).first()
+    if existing:
+        return existing
+    if db.query(Player).filter(Player.name.ilike(name), Player.is_guest.isnot(True)).first():
+        raise HTTPException(400, f"Ya existe un jugador registrado con el nombre '{name}'")
     seq = db.query(PlayerIdSequence).filter(PlayerIdSequence.id==1).first()
     if not seq:
         seq = PlayerIdSequence(id=1, max_id=0); db.add(seq); db.flush()
     current_max = db.query(func.max(Player.id)).scalar() or 0
     new_id = max(seq.max_id, current_max) + 1
     seq.max_id = new_id
-    # Ensure guest name is unique (append suffix if collision)
-    base_name = name
-    suffix = 1
-    while db.query(Player).filter(Player.name == name).first():
-        name = f"{base_name} ({suffix})"
-        suffix += 1
     guest = Player(
         id=new_id, name=name, is_guest=True,
         shot_min=5.0, shot_max=5.0, passing_min=5.0, passing_max=5.0,
