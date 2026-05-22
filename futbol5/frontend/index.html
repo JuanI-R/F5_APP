@@ -2867,7 +2867,7 @@ function renderPlayerAdmin(root) {
       listWrap.appendChild(h('div',{class:'empty'},h('p',{},'No hay jugadores')));
       return;
     }
-    state.players.forEach(p => {
+    state.players.filter(p => !p.is_guest).forEach(p => {
       const row = h('div',{class:'player-chip',style:'margin-bottom:6px'});
       const left2 = h('div',{style:'display:flex;align-items:center;gap:8px;flex:1'});
       left2.appendChild(h('span',{class:'player-name'},p.name));
