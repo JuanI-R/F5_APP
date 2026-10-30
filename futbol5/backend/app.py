@@ -1195,7 +1195,18 @@ def stats_wrapped(year: int, db=Depends(get_session), _: None = Depends(check_ad
             stat_value=str(best_in_team_count[bit_id]), stat_label='veces 1° de su equipo',
             stat_sub=f"en {gp[bit_id]} partidos jugados"))
 
-    # 4. Ironman
+    # 4. Mejor winrate (min 3 partidos jugados)
+    best_wr_id, best_wr = None, None
+    for pid in gp:
+        if gp[pid] < 3: continue
+        wr = wins.get(pid, 0) / gp[pid]
+        if best_wr is None or wr > best_wr: best_wr, best_wr_id = wr, pid
+    if best_wr_id is not None:
+        awards.append(WrappedAward(key='best_winrate', player_ids=[best_wr_id],
+            stat_value=f"{round(best_wr*100)}%", stat_label='de victorias',
+            stat_sub=f"{wins.get(best_wr_id,0)} de {gp[best_wr_id]} partidos"))
+
+    # 5. Ironman
     if gp:
         iron_id = max(gp, key=gp.get)
         awards.append(WrappedAward(key='ironman', player_ids=[iron_id],
@@ -1300,16 +1311,13 @@ def stats_wrapped(year: int, db=Depends(get_session), _: None = Depends(check_ad
             x, y = tuple(clasico_key)
             x_wins = rival_pairs.get((x, y), [0, 0])[1]
             y_wins = rival_pairs.get((y, x), [0, 0])[1]
-            if x_wins == y_wins:
-                # Empate en el historial directo: ambos son protagonistas, nadie "gana" el clásico.
-                awards.append(WrappedAward(key='clasico', player_ids=[x, y],
-                    stat_value=f"{round(x_wins/total_g*100)}%", stat_label='de victorias cada uno',
-                    stat_sub=f"{x_wins}-{y_wins} en {total_g} enfrentamientos"))
-            else:
-                leader, rival, leader_wins = (x, y, x_wins) if x_wins > y_wins else (y, x, y_wins)
-                awards.append(WrappedAward(key='clasico', player_ids=[leader], player_ids_b=[rival],
-                    stat_value=f"{round(leader_wins/total_g*100)}%", stat_label='de victorias en el clásico',
-                    stat_sub=f"{leader_wins} de {total_g} enfrentamientos"))
+            # Siempre mostramos a los dos protagonistas con el marcador cabeza a cabeza,
+            # gane quien gane (o empatado).
+            a, a_w, b, b_w = (x, x_wins, y, y_wins) if x_wins >= y_wins else (y, y_wins, x, x_wins)
+            draws = total_g - a_w - b_w
+            sub = f"{total_g} enfrentamientos" + (f", {draws} empates" if draws else "")
+            awards.append(WrappedAward(key='clasico', player_ids=[a, b],
+                stat_value=f"{a_w}-{b_w}", stat_label='en el clásico', stat_sub=sub))
 
     # 11. La paliza del año (mayor diferencia de gol en un partido)
     blowout = None

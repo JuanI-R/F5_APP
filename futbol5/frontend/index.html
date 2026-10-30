@@ -2149,6 +2149,29 @@ async function renderStats(root) {
     };
     controlsRow.appendChild(modeBtn);
 
+    let currentData = null;
+    const downloadAllBtn = h('button',{class:'btn btn-green btn-sm'},'⬇ Descargar todo');
+    downloadAllBtn.onclick = async () => {
+      if (!currentData || !currentData.ordered.length) return;
+      const original = downloadAllBtn.textContent;
+      downloadAllBtn.disabled = true;
+      try {
+        for (let i = 0; i < currentData.ordered.length; i++) {
+          const award = currentData.ordered[i];
+          downloadAllBtn.textContent = `Descargando ${i+1}/${currentData.ordered.length}...`;
+          await wrDownloadCard(award, WRAPPED_META[award.key], currentData.seasonMap, currentData.year, i, currentData.ordered.length);
+          await new Promise(r => setTimeout(r, 400));
+        }
+        toast(`${currentData.ordered.length} tarjetas descargadas ✓`);
+      } catch(e) {
+        toast('Error al descargar: ' + e.message, 'err');
+      } finally {
+        downloadAllBtn.disabled = false;
+        downloadAllBtn.textContent = original;
+      }
+    };
+    controlsRow.appendChild(downloadAllBtn);
+
     card.appendChild(controlsRow);
     const body = h('div',{});
     card.appendChild(body);
@@ -2164,6 +2187,7 @@ async function renderStats(root) {
         const seasonMap = Object.fromEntries(season.map((s, i) => [s.player_id, { ...s, pos: i + 1 }]));
         body.innerHTML = '';
         const ordered = WRAPPED_ORDER.map(k => wrapped.awards.find(a => a.key === k)).filter(Boolean);
+        currentData = { ordered, seasonMap, year: selYear };
         if (!ordered.length) {
           body.appendChild(h('div',{class:'empty'},h('p',{},`No hay suficientes partidos jugados en ${selYear} para armar el Wrapped.`)));
           return;
@@ -2187,6 +2211,7 @@ const WRAPPED_META = {
   leader:        { kicker:'Tabla general', title:'Líder del año', desc:'El jugador con más puntos de rendimiento acumulados en el año.', stamp:'N.º 1\nDEL AÑO' },
   mvp:           { kicker:'Ranking de partido', title:'Más veces MVP', desc:'El jugador que más veces quedó 1° en el ranking de su equipo, jugando en el equipo que ganó.', stamp:'MÁS\nMVP' },
   best_in_team:  { kicker:'Ranking de partido', title:'Más veces 1°', desc:'El jugador que más veces quedó 1° en el ranking de su equipo, haya ganado o perdido el partido.', stamp:'SIEMPRE\nARRIBA' },
+  best_winrate:  { kicker:'Tabla general', title:'Mejor winrate', desc:'El jugador con mayor porcentaje de partidos ganados en el año.', stamp:'MÁS\nEFECTIVO' },
   ironman:       { kicker:'Asistencia', title:'Ironman', desc:'El que más partidos jugó en el año. Ni la lluvia lo paró.', stamp:'NUNCA\nFALTA' },
   most_improved: { kicker:'Evolución', title:'El más mejorado', desc:'Mayor suba de rendimiento entre la primera y la segunda mitad del año.', stamp:'EN\nALZA' },
   win_streak:    { kicker:'Rachas', title:'Racha más larga', desc:'La mayor cantidad de partidos ganados seguidos por un mismo jugador en el año.', stamp:'EN\nLLAMAS' },
@@ -2198,7 +2223,7 @@ const WRAPPED_META = {
   bottom_table:  { kicker:'Tabla general', title:'Fondo de tabla', desc:'El último de la tabla de rendimiento del año.', stamp:'FONDO\nDE TABLA' },
   nemesis:       { kicker:'Rivalidades', title:'Piedra en el zapato', desc:'A quién le costó más ganarle: peor % de victorias contra un rival específico.', stamp:'SU\nCUCO' },
 };
-const WRAPPED_ORDER = ['leader','mvp','best_in_team','ironman','most_improved','win_streak','lose_streak','best_duo','worst_duo','clasico','paliza','bottom_table','nemesis'];
+const WRAPPED_ORDER = ['leader','mvp','best_in_team','best_winrate','ironman','most_improved','win_streak','lose_streak','best_duo','worst_duo','clasico','paliza','bottom_table','nemesis'];
 const WRAPPED_DUO_KEYS = ['best_duo','worst_duo'];
 
 function wrName(pid) {
@@ -2246,16 +2271,20 @@ function wrBuildTicket(award, meta, seasonMap, idx, total) {
     ticket.appendChild(row);
     if (award.flag) ticket.appendChild(h('div',{style:'font-size:.72rem;opacity:.55;margin-bottom:10px'}, '👑 MVP del partido'));
     ticket.appendChild(statBlock());
-  } else if (award.key === 'clasico' && !award.player_ids_b.length) {
-    // Empate en el historial directo: los dos son protagonistas
-    const row = h('div',{class:'wr-avatar-row'});
-    award.player_ids.forEach((pid, i) => {
-      row.appendChild(wrAvatar(pid, 46));
-      row.appendChild(h('div',{class:'wr-player-name',style:'font-size:1.2rem'}, wrName(pid) + (i===0 ? ' &' : '')));
-    });
+  } else if (award.key === 'clasico') {
+    // Marcador cabeza a cabeza: los dos protagonistas siempre visibles, gane quien gane.
+    const [aw, bw] = award.stat_value.split('-');
+    const mkSide = pid => h('div',{style:'display:flex;flex-direction:column;align-items:center;gap:6px;flex:1;min-width:0'},
+      wrAvatar(pid, 48),
+      h('div',{style:'font-weight:700;font-size:.82rem;text-align:center'}, wrName(pid)));
+    const row = h('div',{style:'display:flex;align-items:center;gap:8px;margin-bottom:10px'},
+      mkSide(award.player_ids[0]),
+      h('div',{style:'font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:2rem;color:#b6392c;white-space:nowrap'}, `${aw} — ${bw}`),
+      mkSide(award.player_ids[1])
+    );
     ticket.appendChild(row);
-    ticket.appendChild(statBlock());
-  } else if (award.key === 'nemesis' || award.key === 'clasico') {
+    ticket.appendChild(h('div',{style:'text-align:center;font-size:.78rem;opacity:.6;margin-bottom:10px'}, award.stat_sub));
+  } else if (award.key === 'nemesis') {
     ticket.appendChild(h('div',{class:'wr-avatar-row'}, wrAvatar(award.player_ids[0]), h('div',{class:'wr-player-name'}, wrName(award.player_ids[0]))));
     ticket.appendChild(h('div',{style:'font-size:.82rem;opacity:.65;margin-bottom:10px'}, 'vs ' + wrName(award.player_ids_b[0])));
     ticket.appendChild(statBlock());
@@ -2329,6 +2358,11 @@ async function wrDownloadCard(award, meta, seasonMap, year, idx, total) {
   ticket.style.minHeight = '600px';
   const wrapper = h('div',{style:`width:${EXPORT_W}px;zoom:${ZOOM};position:fixed;left:-9999px;top:0`}, ticket);
   document.body.appendChild(wrapper);
+
+  // La tipografía de Google Fonts referenciada dentro del SVG puede "taintear"
+  // el canvas en algunos Chrome. Para la exportación forzamos una fuente del
+  // sistema (no afecta a la tarjeta que se ve en pantalla, es un clon aparte).
+  wrapper.querySelectorAll('*').forEach(el => { el.style.fontFamily = 'Arial, Helvetica, sans-serif'; });
 
   // Las fotos embebidas adentro del SVG "taintean" el canvas, así que las
   // sacamos antes de rasterizar y las dibujamos aparte, directo sobre el canvas.
