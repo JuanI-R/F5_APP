@@ -1283,12 +1283,15 @@ def stats_wrapped(year: int, db=Depends(get_session), _: None = Depends(check_ad
         duo_candidates = {k: v for k, v in partner_pairs.items() if v[0] >= min_g}
         if duo_candidates: break
 
-    best_duo, best_duo_wr = None, None
-    worst_duo, worst_duo_wr = None, None
+    # A igual winrate, gana la dupla con más partidos jugados juntos (más representativo).
+    best_duo, best_duo_wr, best_duo_g = None, None, None
+    worst_duo, worst_duo_wr, worst_duo_g = None, None, None
     for key, (g, w) in duo_candidates.items():
         wr = w / g
-        if best_duo_wr is None or wr > best_duo_wr: best_duo_wr, best_duo = wr, key
-        if worst_duo_wr is None or wr < worst_duo_wr: worst_duo_wr, worst_duo = wr, key
+        if best_duo_wr is None or wr > best_duo_wr or (wr == best_duo_wr and g > best_duo_g):
+            best_duo_wr, best_duo_g, best_duo = wr, g, key
+        if worst_duo_wr is None or wr < worst_duo_wr or (wr == worst_duo_wr and g > worst_duo_g):
+            worst_duo_wr, worst_duo_g, worst_duo = wr, g, key
     if best_duo:
         g, w = partner_pairs[best_duo]
         awards.append(WrappedAward(key='best_duo', player_ids=list(best_duo),
