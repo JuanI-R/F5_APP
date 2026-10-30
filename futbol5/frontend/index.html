@@ -2159,7 +2159,7 @@ async function renderStats(root) {
       try {
         const [wrapped, season] = await Promise.all([
           api(`/stats/wrapped?year=${selYear}`),
-          api(`/stats/season?year=${selYear}`),
+          api(`/stats/season?year=${selYear}&ranked_only=true`),
         ]);
         const seasonMap = Object.fromEntries(season.map((s, i) => [s.player_id, { ...s, pos: i + 1 }]));
         body.innerHTML = '';
@@ -2199,7 +2199,7 @@ const WRAPPED_META = {
   nemesis:       { kicker:'Rivalidades', title:'Piedra en el zapato', desc:'A quién le costó más ganarle: peor % de victorias contra un rival específico.', stamp:'SU\nCUCO' },
 };
 const WRAPPED_ORDER = ['leader','mvp','best_in_team','ironman','most_improved','win_streak','lose_streak','best_duo','worst_duo','clasico','paliza','bottom_table','nemesis'];
-const WRAPPED_DUO_KEYS = ['best_duo','worst_duo','clasico'];
+const WRAPPED_DUO_KEYS = ['best_duo','worst_duo'];
 
 function wrName(pid) {
   const p = state.players.find(x => x.id === pid);
@@ -2230,18 +2230,23 @@ function wrBuildTicket(award, meta, seasonMap, idx, total) {
 
   if (award.key === 'paliza') {
     const row = h('div',{style:'display:flex;align-items:flex-start;margin-bottom:14px'});
-    const mkTeam = (ids, label) => {
+    const mkTeam = (ids, label, won) => {
       const col = h('div',{class:'wr-team-col'});
-      col.appendChild(h('div',{style:'font-size:.7rem;font-weight:700;opacity:.55'}, label));
-      ids.forEach(pid => col.appendChild(h('div',{style:'font-size:.84rem;font-weight:600'}, wrName(pid))));
+      col.appendChild(h('div',{style:`font-size:.72rem;font-weight:700;color:${won?'#b6392c':'#1c1309'};opacity:${won?1:.45}`}, (won?'🏆 ':'') + label));
+      ids.forEach((pid, i) => {
+        const isMvp = won && i === 0 && award.flag;
+        col.appendChild(h('div',{style:`font-size:.84rem;font-weight:${won?'700':'500'};opacity:${won?1:.5}`},
+          wrName(pid) + (isMvp ? ' 👑' : '')));
+      });
       return col;
     };
-    row.appendChild(mkTeam(award.player_ids, 'Ganó'));
+    row.appendChild(mkTeam(award.player_ids, 'Ganó', true));
     row.appendChild(h('div',{class:'wr-vs'},'—'));
-    row.appendChild(mkTeam(award.player_ids_b, 'Perdió'));
+    row.appendChild(mkTeam(award.player_ids_b, 'Perdió', false));
     ticket.appendChild(row);
+    if (award.flag) ticket.appendChild(h('div',{style:'font-size:.72rem;opacity:.55;margin-bottom:10px'}, '👑 MVP del partido'));
     ticket.appendChild(statBlock());
-  } else if (award.key === 'nemesis') {
+  } else if (award.key === 'nemesis' || award.key === 'clasico') {
     ticket.appendChild(h('div',{class:'wr-avatar-row'}, wrAvatar(award.player_ids[0]), h('div',{class:'wr-player-name'}, wrName(award.player_ids[0]))));
     ticket.appendChild(h('div',{style:'font-size:.82rem;opacity:.65;margin-bottom:10px'}, 'vs ' + wrName(award.player_ids_b[0])));
     ticket.appendChild(statBlock());

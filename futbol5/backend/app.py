@@ -331,6 +331,7 @@ class WrappedAward(BaseModel):
     stat_value: str = ""
     stat_label: str = ""
     stat_sub: str = ""
+    flag: bool = False
 
 class WrappedOut(BaseModel):
     year: int
@@ -1289,9 +1290,15 @@ def stats_wrapped(year: int, db=Depends(get_session), _: None = Depends(check_ad
         if key not in clasico_games: clasico_games[key] = g
     if clasico_games:
         clasico_key = max(clasico_games, key=clasico_games.get)
-        if clasico_games[clasico_key] >= 2:
-            awards.append(WrappedAward(key='clasico', player_ids=list(clasico_key),
-                stat_value=str(clasico_games[clasico_key]), stat_label='enfrentamientos', stat_sub=''))
+        total_g = clasico_games[clasico_key]
+        if total_g >= 2:
+            x, y = tuple(clasico_key)
+            x_wins = rival_pairs.get((x, y), [0, 0])[1]
+            y_wins = rival_pairs.get((y, x), [0, 0])[1]
+            leader, rival, leader_wins = (x, y, x_wins) if x_wins >= y_wins else (y, x, y_wins)
+            awards.append(WrappedAward(key='clasico', player_ids=[leader], player_ids_b=[rival],
+                stat_value=f"{round(leader_wins/total_g*100)}%", stat_label='de victorias en el clásico',
+                stat_sub=f"{leader_wins} de {total_g} enfrentamientos"))
 
     # 11. La paliza del año (mayor diferencia de gol en un partido)
     blowout = None
@@ -1301,9 +1308,13 @@ def stats_wrapped(year: int, db=Depends(get_session), _: None = Depends(check_ad
     if blowout:
         win_ids = [x for x in (csv_split(blowout.team_a) if blowout.winner_team=='A' else csv_split(blowout.team_b)) or [] if x not in guest_ids]
         lose_ids = [x for x in (csv_split(blowout.team_b) if blowout.winner_team=='A' else csv_split(blowout.team_a)) or [] if x not in guest_ids]
+        # Si el partido tiene ranking cargado, el MVP (1° del equipo ganador) va primero en la lista
+        rw = csv_split(blowout.rank_winners) or []
+        if rw:
+            win_ids = [pid for pid in rw if pid in win_ids] + [pid for pid in win_ids if pid not in rw]
         date_str = blowout.played_at.strftime('%d/%m') if blowout.played_at else ''
         awards.append(WrappedAward(key='paliza', player_ids=win_ids, player_ids_b=lose_ids,
-            stat_value=f"+{blowout.goal_diff}", stat_label='de diferencia', stat_sub=date_str))
+            stat_value=f"+{blowout.goal_diff}", stat_label='de diferencia', stat_sub=date_str, flag=bool(rw)))
 
     # 12. Fondo de tabla (menor cantidad de puntos, min 3 partidos jugados)
     colero_id, colero_perf = None, None
