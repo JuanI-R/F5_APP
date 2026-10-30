@@ -2246,6 +2246,15 @@ function wrBuildTicket(award, meta, seasonMap, idx, total) {
     ticket.appendChild(row);
     if (award.flag) ticket.appendChild(h('div',{style:'font-size:.72rem;opacity:.55;margin-bottom:10px'}, '👑 MVP del partido'));
     ticket.appendChild(statBlock());
+  } else if (award.key === 'clasico' && !award.player_ids_b.length) {
+    // Empate en el historial directo: los dos son protagonistas
+    const row = h('div',{class:'wr-avatar-row'});
+    award.player_ids.forEach((pid, i) => {
+      row.appendChild(wrAvatar(pid, 46));
+      row.appendChild(h('div',{class:'wr-player-name',style:'font-size:1.2rem'}, wrName(pid) + (i===0 ? ' &' : '')));
+    });
+    ticket.appendChild(row);
+    ticket.appendChild(statBlock());
   } else if (award.key === 'nemesis' || award.key === 'clasico') {
     ticket.appendChild(h('div',{class:'wr-avatar-row'}, wrAvatar(award.player_ids[0]), h('div',{class:'wr-player-name'}, wrName(award.player_ids[0]))));
     ticket.appendChild(h('div',{style:'font-size:.82rem;opacity:.65;margin-bottom:10px'}, 'vs ' + wrName(award.player_ids_b[0])));

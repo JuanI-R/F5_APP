@@ -1266,10 +1266,15 @@ def stats_wrapped(year: int, db=Depends(get_session), _: None = Depends(check_ad
                 s2 = rival_pairs.setdefault((y, x), [0, 0]); s2[0] += 1
                 if b_won: s2[1] += 1
 
+    # Preferimos duplas con al menos 5 partidos juntos; si ninguna llega, relajamos el piso.
+    duo_candidates = {}
+    for min_g in (5, 4, 3, 2):
+        duo_candidates = {k: v for k, v in partner_pairs.items() if v[0] >= min_g}
+        if duo_candidates: break
+
     best_duo, best_duo_wr = None, None
     worst_duo, worst_duo_wr = None, None
-    for key, (g, w) in partner_pairs.items():
-        if g < 2: continue
+    for key, (g, w) in duo_candidates.items():
         wr = w / g
         if best_duo_wr is None or wr > best_duo_wr: best_duo_wr, best_duo = wr, key
         if worst_duo_wr is None or wr < worst_duo_wr: worst_duo_wr, worst_duo = wr, key
@@ -1295,10 +1300,16 @@ def stats_wrapped(year: int, db=Depends(get_session), _: None = Depends(check_ad
             x, y = tuple(clasico_key)
             x_wins = rival_pairs.get((x, y), [0, 0])[1]
             y_wins = rival_pairs.get((y, x), [0, 0])[1]
-            leader, rival, leader_wins = (x, y, x_wins) if x_wins >= y_wins else (y, x, y_wins)
-            awards.append(WrappedAward(key='clasico', player_ids=[leader], player_ids_b=[rival],
-                stat_value=f"{round(leader_wins/total_g*100)}%", stat_label='de victorias en el clásico',
-                stat_sub=f"{leader_wins} de {total_g} enfrentamientos"))
+            if x_wins == y_wins:
+                # Empate en el historial directo: ambos son protagonistas, nadie "gana" el clásico.
+                awards.append(WrappedAward(key='clasico', player_ids=[x, y],
+                    stat_value=f"{round(x_wins/total_g*100)}%", stat_label='de victorias cada uno',
+                    stat_sub=f"{x_wins}-{y_wins} en {total_g} enfrentamientos"))
+            else:
+                leader, rival, leader_wins = (x, y, x_wins) if x_wins > y_wins else (y, x, y_wins)
+                awards.append(WrappedAward(key='clasico', player_ids=[leader], player_ids_b=[rival],
+                    stat_value=f"{round(leader_wins/total_g*100)}%", stat_label='de victorias en el clásico',
+                    stat_sub=f"{leader_wins} de {total_g} enfrentamientos"))
 
     # 11. La paliza del año (mayor diferencia de gol en un partido)
     blowout = None
