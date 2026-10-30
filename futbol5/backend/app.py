@@ -290,32 +290,9 @@ class MatchResultOut(BaseModel):
     match: MatchOut
     voting_deadline: datetime | None = None
 
-class MatchVoteIn(BaseModel):
-    voter_player_id: int
-    rank: List[int] = Field(..., min_length=5, max_length=5)
-
-class ModifyVoteIn(BaseModel):
-    rank: List[int] = Field(..., min_length=5, max_length=5)
-
-class VoteAggregateEntry(BaseModel):
-    player_id: int; name: str; position: int; borda_points: int
-
-class IndividualVoteEntry(BaseModel):
-    voter_player_id: int; voter_name: str; voted_by_admin: bool
-    submitted_at: datetime; rank: List[int]
-
-class MatchVotesOut(BaseModel):
-    deadline: datetime | None
-    total_participants: int
-    votes_cast: int
-    current_user_voted: bool | None
-    aggregate: List[VoteAggregateEntry]
-    individual_votes: List[IndividualVoteEntry] | None = None
-    pending_voters: List[dict] | None = None
-
-class VoteStatusOut(BaseModel):
-    pending: bool
-    deadline: datetime | None
+class MatchRankingIn(BaseModel):
+    rank_winners: List[int] = Field(..., min_length=5, max_length=5)
+    rank_losers: List[int] = Field(..., min_length=5, max_length=5)
 
 class TeamGenRequest(BaseModel):
     player_ids: List[int]; lambda_syn: float = 10.0; use_synergy: bool = True
@@ -381,45 +358,6 @@ def next_thursday():
     dt = datetime.utcnow()
     days_ahead = (3 - dt.weekday()) % 7
     return (dt + timedelta(days=days_ahead)).replace(hour=21,minute=0,second=0,microsecond=0)
-
-def next_wednesday_after(dt: datetime) -> datetime:
-    """Returns the next Wednesday 23:59 after dt (used for voting deadline)."""
-    days_ahead = (2 - dt.weekday()) % 7  # Wednesday = weekday 2
-    if days_ahead == 0:
-        days_ahead = 7
-    return (dt + timedelta(days=days_ahead)).replace(hour=23, minute=59, second=0, microsecond=0)
-
-def _borda_rank(db, match_id: int, target_team: str, player_ids: list) -> list:
-    """Returns player IDs sorted by Borda count from votes targeting target_team.
-    1st position = 5 pts, 2nd = 4, ..., 5th = 1. Returns [] if no votes."""
-    votes = db.query(MatchVote).filter(
-        MatchVote.match_id == match_id,
-        MatchVote.target_team == target_team
-    ).all()
-    if not votes:
-        return []
-    scores = {pid: 0 for pid in player_ids}
-    for vote in votes:
-        for pos, pid in enumerate([vote.rank_1, vote.rank_2, vote.rank_3, vote.rank_4, vote.rank_5]):
-            if pid in scores:
-                scores[pid] += (5 - pos)  # 1st=5, 2nd=4, 3rd=3, 4th=2, 5th=1
-    return sorted(scores.keys(), key=lambda x: -scores[x])
-
-def _borda_recompute(db, match) -> None:
-    """Recomputes rank_winners and rank_losers from all votes for this match."""
-    if not match.winner_team or match.winner_team == "D":
-        return
-    winner_team = match.winner_team
-    loser_team = "B" if winner_team == "A" else "A"
-    winner_ids = csv_split(match.team_a) if winner_team == "A" else csv_split(match.team_b)
-    loser_ids = csv_split(match.team_b) if winner_team == "A" else csv_split(match.team_a)
-    # Losers rank winners (target_team = winner_team)
-    rank_w = _borda_rank(db, match.id, winner_team, winner_ids or [])
-    # Winners rank losers (target_team = loser_team)
-    rank_l = _borda_rank(db, match.id, loser_team, loser_ids or [])
-    match.rank_winners = csv_join(rank_w) if rank_w else None
-    match.rank_losers = csv_join(rank_l) if rank_l else None
-    db.commit()
 
 def _perf_score(pid, m):
     rw = csv_split(m.rank_winners) or []
@@ -1013,7 +951,6 @@ def record_result(mid: int, data: MatchResultIn, db=Depends(get_session)):
     m.rank_losers = None
     m.is_recorded = True
     m.played_at = data.played_at or m.scheduled_at or datetime.utcnow()
-    m.voting_deadline = next_wednesday_after(m.played_at) if data.winner_team in ("A", "B") else None
     all_ids = (csv_split(m.team_a) or []) + (csv_split(m.team_b) or [])
     m.trends_snapshot = json.dumps(trends_snapshot(db, all_ids, exclude_match_id=m.id))
     db.commit(); db.refresh(m)
@@ -1026,190 +963,30 @@ def delete_match(mid: int, db=Depends(get_session)):
     db.query(MatchVote).filter(MatchVote.match_id == mid).delete(synchronize_session=False)
     db.delete(m); db.commit(); return {"ok": True}
 
-def get_admin_status(x_admin_pin: str = Header(None)) -> bool:
-    return x_admin_pin == ADMIN_PIN
-
-@app.get("/matches/votes/pending")
-def pending_votes(player_id: int, db=Depends(get_session)):
-    now = datetime.utcnow()
-    voter = db.query(Player).get(player_id)
-    if not voter or voter.is_guest:
-        return {"count": 0, "match_ids": []}
-    played = db.query(Match).filter(Match.is_recorded == True,
-                                     Match.winner_team.in_(["A", "B"])).all()
-    voted_match_ids = {
-        v.match_id for v in db.query(MatchVote).filter(MatchVote.voter_player_id == player_id).all()
-    }
-    pending = []
-    for m in played:
-        if not m.played_at:
-            continue
-        if not m.voting_deadline:
-            continue
-        if now > m.voting_deadline:
-            continue
-        all_ids = (csv_split(m.team_a) or []) + (csv_split(m.team_b) or [])
-        if player_id not in all_ids:
-            continue
-        if m.id not in voted_match_ids:
-            pending.append(m.id)
-    return {"count": len(pending), "match_ids": pending}
-
-@app.post("/matches/{mid}/votes", status_code=201)
-def submit_vote(mid: int, data: MatchVoteIn, is_admin: bool = Depends(get_admin_status), db=Depends(get_session)):
-    m = db.query(Match).get(mid)
-    if not m: raise HTTPException(404, "Partido no encontrado")
-    if not m.is_recorded: raise HTTPException(400, "El partido aún no tiene resultado")
-    if m.winner_team == "D": raise HTTPException(400, "No se vota en partidos empatados")
-
-    if not m.voting_deadline or datetime.utcnow() > m.voting_deadline:
-        raise HTTPException(400, "El período de votación ya cerró")
-
-    team_a = csv_split(m.team_a) or []
-    team_b = csv_split(m.team_b) or []
-    all_participants = team_a + team_b
-    if data.voter_player_id not in all_participants:
-        raise HTTPException(422, "El jugador no participó en este partido")
-
-    voter_player = db.query(Player).get(data.voter_player_id)
-    if voter_player and voter_player.is_guest:
-        raise HTTPException(422, "Los invitados no pueden votar")
-
-    # Determine rival team
-    if data.voter_player_id in team_a:
-        target_team = "B"
-        rival_ids = team_b
-    else:
-        target_team = "A"
-        rival_ids = team_a
-
-    if len(data.rank) != 5 or set(data.rank) != set(rival_ids):
-        raise HTTPException(422, f"rank debe contener exactamente los 5 jugadores del equipo rival: {rival_ids}")
-
-    # Check unique constraint
-    existing = db.query(MatchVote).filter(
-        MatchVote.match_id == mid,
-        MatchVote.voter_player_id == data.voter_player_id
-    ).first()
-    if existing:
-        raise HTTPException(409, detail="already_voted")
-
-    vote = MatchVote(
-        match_id=mid,
-        voter_player_id=data.voter_player_id,
-        target_team=target_team,
-        rank_1=data.rank[0], rank_2=data.rank[1], rank_3=data.rank[2],
-        rank_4=data.rank[3], rank_5=data.rank[4],
-        voted_by_admin=is_admin,
-        submitted_at=datetime.utcnow(),
-    )
-    db.add(vote)
-    db.commit()
-
-    # Recompute rankings from all votes
-    db.refresh(m)
-    _borda_recompute(db, m)
-
-    return {"ok": True}
-
-@app.get("/matches/{mid}/votes", response_model=MatchVotesOut)
-def get_match_votes(mid: int, player_id: int | None = None,
-                    is_admin: bool = Depends(get_admin_status), db=Depends(get_session)):
-    m = db.query(Match).get(mid)
-    if not m: raise HTTPException(404, "Partido no encontrado")
-
-    deadline = m.voting_deadline
-    team_a = csv_split(m.team_a) or []
-    team_b = csv_split(m.team_b) or []
-    guest_ids = {p.id for p in db.query(Player).filter(Player.is_guest.is_(True)).all()}
-    total_participants = len([pid for pid in (team_a + team_b) if pid not in guest_ids])
-
-    votes = db.query(MatchVote).filter(MatchVote.match_id == mid).all()
-    votes_cast = len(votes)
-
-    current_user_voted = None
-    if player_id is not None:
-        current_user_voted = any(v.voter_player_id == player_id for v in votes)
-
-    player_map = {p.id: p.name for p in db.query(Player).all()}
-    def build_aggregate(target_team, player_ids):
-        target_votes = [v for v in votes if v.target_team == target_team]
-        scores = {pid: 0 for pid in player_ids}
-        for v in target_votes:
-            for pos, pid in enumerate([v.rank_1, v.rank_2, v.rank_3, v.rank_4, v.rank_5]):
-                if pid in scores:
-                    scores[pid] += (5 - pos)
-        sorted_ids = sorted(scores.keys(), key=lambda x: -scores[x])
-        return [VoteAggregateEntry(player_id=pid, name=player_map.get(pid, f"#{pid}"),
-                                   position=i+1, borda_points=scores[pid])
-                for i, pid in enumerate(sorted_ids) if scores[pid] > 0]
-
-    winner_team = m.winner_team
-    loser_team = "B" if winner_team == "A" else "A"
-    winner_ids = team_a if winner_team == "A" else team_b
-    loser_ids = team_b if winner_team == "A" else team_a
-
-    aggregate = build_aggregate(winner_team, winner_ids) + build_aggregate(loser_team, loser_ids)
-
-    individual_votes = None
-    pending_voters = None
-    if is_admin:
-        individual_votes = [
-            IndividualVoteEntry(
-                voter_player_id=v.voter_player_id,
-                voter_name=player_map.get(v.voter_player_id, f"#{v.voter_player_id}"),
-                voted_by_admin=v.voted_by_admin,
-                submitted_at=v.submitted_at,
-                rank=[v.rank_1, v.rank_2, v.rank_3, v.rank_4, v.rank_5],
-            ) for v in votes
-        ]
-        voted_ids = {v.voter_player_id for v in votes}
-        pending_voters = [
-            {"player_id": pid, "name": player_map.get(pid, f"#{pid}")}
-            for pid in (team_a + team_b)
-            if pid not in voted_ids and pid not in guest_ids
-        ]
-
-    return MatchVotesOut(
-        deadline=deadline, total_participants=total_participants,
-        votes_cast=votes_cast, current_user_voted=current_user_voted,
-        aggregate=aggregate, individual_votes=individual_votes,
-        pending_voters=pending_voters,
-    )
-
 def check_admin(x_admin_pin: str = Header(None)):
     if x_admin_pin != ADMIN_PIN:
         raise HTTPException(401, "PIN incorrecto")
 
-@app.put("/matches/{mid}/votes/{voter_player_id}", status_code=200)
-def modify_vote(mid: int, voter_player_id: int, data: ModifyVoteIn,
-                db=Depends(get_session), _: None = Depends(check_admin)):
-    last = db.query(Match).filter(Match.is_recorded.is_(True)).order_by(Match.id.desc()).first()
-    if not last or last.id != mid:
-        raise HTTPException(400, "Solo se puede modificar el último partido")
-    m = last
+@app.put("/matches/{mid}/ranking", response_model=MatchOut)
+def set_match_ranking(mid: int, data: MatchRankingIn, db=Depends(get_session), _: None = Depends(check_admin)):
+    """El ranking de cada partido (orden 1°-5° de ganadores y perdedores) lo define
+    el admin directamente, sin votación de jugadores."""
+    m = db.query(Match).get(mid)
+    if not m: raise HTTPException(404, "Partido no encontrado")
+    if not m.is_recorded or m.winner_team not in ("A", "B"):
+        raise HTTPException(400, "El partido no tiene un equipo ganador definido")
 
-    vote = db.query(MatchVote).filter(
-        MatchVote.match_id == mid,
-        MatchVote.voter_player_id == voter_player_id,
-    ).first()
-    if not vote:
-        raise HTTPException(404, "El jugador no tiene voto registrado en este partido")
+    winner_ids = csv_split(m.team_a) if m.winner_team == "A" else csv_split(m.team_b)
+    loser_ids = csv_split(m.team_b) if m.winner_team == "A" else csv_split(m.team_a)
+    if sorted(data.rank_winners) != sorted(winner_ids or []):
+        raise HTTPException(422, f"rank_winners debe contener exactamente a: {winner_ids}")
+    if sorted(data.rank_losers) != sorted(loser_ids or []):
+        raise HTTPException(422, f"rank_losers debe contener exactamente a: {loser_ids}")
 
-    team_a = csv_split(m.team_a) or []
-    team_b = csv_split(m.team_b) or []
-    rival_ids = team_b if voter_player_id in team_a else team_a
-    if len(data.rank) != 5 or set(data.rank) != set(rival_ids):
-        raise HTTPException(422, f"rank debe contener exactamente los 5 jugadores del equipo rival: {rival_ids}")
-
-    vote.rank_1, vote.rank_2, vote.rank_3, vote.rank_4, vote.rank_5 = data.rank
-    vote.voted_by_admin = True
-    vote.submitted_at = datetime.utcnow()
-    db.commit()
-
-    db.refresh(m)
-    _borda_recompute(db, m)
-    return {"ok": True}
+    m.rank_winners = csv_join(data.rank_winners)
+    m.rank_losers = csv_join(data.rank_losers)
+    db.commit(); db.refresh(m)
+    return to_match_out(m)
 
 @app.post("/admin/verify")
 def admin_verify(x_admin_pin: str = Header(None)):

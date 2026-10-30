@@ -397,7 +397,7 @@
   <!-- TABS -->
   <nav class="tabs" id="mainTabs">
     <button class="active" onclick="setTab('jugar')">⚽ Jugar</button>
-    <button onclick="setTab('historial')" style="position:relative">📋 Historial<span id="historial-badge" style="display:none;position:absolute;top:-4px;right:-4px;background:#ef4444;color:#fff;border-radius:50%;width:14px;height:14px;font-size:9px;font-weight:700;align-items:center;justify-content:center"></span></button>
+    <button onclick="setTab('historial')">📋 Historial</button>
     <button onclick="setTab('stats')">📊 Stats</button>
     <button onclick="setTab('admin')">🔧 Admin</button>
   </nav>
@@ -568,30 +568,6 @@ function playerLabel(p) {
 function nameById(id) {
   const p = state.players.find(x => x.id === id);
   return p ? playerLabel(p) : `#${id}`;
-}
-
-function fmtDeadline(isoStr) {
-  if (!isoStr) return '';
-  const d = new Date(isoStr);
-  return d.toLocaleDateString('es-AR', { weekday:'short', day:'numeric', month:'short' });
-}
-
-async function updateHistorialBadge() {
-  const badge = document.getElementById('historial-badge');
-  if (!badge) return;
-  const myPid = state.me?.player_id;
-  if (!myPid) { badge.style.display = 'none'; return; }
-  try {
-    const data = await api(`/matches/votes/pending?player_id=${myPid}`);
-    if (data.count > 0) {
-      badge.textContent = data.count;
-      badge.style.display = 'flex';
-    } else {
-      badge.style.display = 'none';
-    }
-  } catch(e) {
-    badge.style.display = 'none';
-  }
 }
 
 // =========================================================
@@ -1110,7 +1086,6 @@ function openResultModal(match, playedAtOrDone, onDone) {
       winner = val;
       Object.entries(winnerBtnsMap).forEach(([v,b]) => b.className = `winner-btn${winner===v?' active-'+v.toLowerCase():''}`);
       diffRow.style.display = val==='D' ? 'none' : 'flex';
-      deadlineBanner.style.display = val==='D' ? 'none' : 'block';
     }}, lbl);
     winnerBtnsMap[val] = btn;
     winnerRow.appendChild(btn);
@@ -1124,17 +1099,6 @@ function openResultModal(match, playedAtOrDone, onDone) {
   diffRow.appendChild(h('span',{style:'font-size:.85rem;color:var(--muted)'},'Diferencia de goles:'));
   diffRow.appendChild(inDiff);
   modal.appendChild(diffRow);
-
-  // ---- DEADLINE BANNER ----
-  const nextWed = (() => {
-    const d = new Date(); const day = d.getDay();
-    const daysAhead = ((3 - day) + 7) % 7 || 7;
-    d.setDate(d.getDate() + daysAhead);
-    return d.toLocaleDateString('es-AR', { weekday:'short', day:'numeric', month:'short' });
-  })();
-  const deadlineBanner = h('div',{style:'background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.2);border-radius:8px;padding:8px 10px;font-size:.8rem;color:var(--yellow);margin-bottom:14px'},
-    `⏳ Los jugadores tienen hasta el ${nextWed} para rankear al rival.`);
-  modal.appendChild(deadlineBanner);
 
   const saveBtn = h('button',{class:'btn btn-green',style:'margin-top:4px;width:100%',onClick:async()=>{
     try {
@@ -1153,26 +1117,9 @@ function openResultModal(match, playedAtOrDone, onDone) {
   document.body.appendChild(overlay);
 }
 
-// ---- VOTE MODAL ----
-function openVoteModal(match, onDone) {
-  const myPlayerId = state.me?.player_id;
-  if (!myPlayerId) { toast('Debés estar logueado para votar', 'err'); return; }
-
-  const teamA = match.team_a || [];
-  const teamB = match.team_b || [];
-  const myTeam = teamA.includes(myPlayerId) ? 'A' : 'B';
-  const rivalIds = myTeam === 'A' ? teamB : teamA;
-
-  const overlay = h('div', { class:'overlay', onClick: e => { if(e.target===overlay) overlay.remove(); } });
-  const modal = h('div', { class:'modal' });
-  const dateStr = match.played_at ? new Date(match.played_at).toLocaleDateString('es-AR',{day:'numeric',month:'long'}) : '—';
-  modal.appendChild(h('div', { class:'modal-title' },
-    h('span',{},'⚽ Rankear equipo rival'),
-    h('button',{class:'close-btn',onClick:()=>overlay.remove()},'×')
-  ));
-  modal.appendChild(h('div',{style:'font-size:.78rem;color:var(--muted);margin-bottom:12px'},`Arrastrá del mejor al peor · partido ${dateStr}`));
-
-  let ranked = [...rivalIds];
+// ---- RANKING MODAL (el admin fija el ranking del partido a mano) ----
+function mkRankList(ids, existingOrder) {
+  let ranked = (existingOrder && existingOrder.length === ids.length) ? [...existingOrder] : [...ids];
   let dragSrcIdx = null;
   const dropZone = h('div',{class:'rank-drop-zone',style:'margin-bottom:14px'});
 
@@ -1190,7 +1137,6 @@ function openVoteModal(match, onDone) {
       item.appendChild(btnUp);
       item.appendChild(btnDn);
       item.appendChild(h('span',{style:'color:var(--muted);font-size:1rem;cursor:grab;padding:0 4px'},'⠿'));
-
       item.ondragstart = () => { dragSrcIdx = idx; setTimeout(()=>item.classList.add('dragging'),0); };
       item.ondragend = () => { item.classList.remove('dragging'); dragSrcIdx = null; };
       item.ondragover = e => { e.preventDefault(); };
@@ -1208,305 +1154,43 @@ function openVoteModal(match, onDone) {
     dropZone.ondrop = e => { e.preventDefault(); dropZone.classList.remove('drag-over'); };
   }
   renderList();
-  modal.appendChild(dropZone);
-
-  const confirmBox = h('div',{style:'display:none;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:8px;padding:12px;margin-top:8px'});
-  confirmBox.appendChild(h('div',{style:'font-weight:700;font-size:.9rem;margin-bottom:6px;color:#fca5a5'},'⚠️ No podés modificar tu ranking'));
-  confirmBox.appendChild(h('div',{style:'font-size:.82rem;color:var(--muted);margin-bottom:10px'},'Una vez confirmado, tu voto es definitivo. ¿Querés continuar?'));
-  const btnRow = h('div',{style:'display:flex;gap:8px'});
-  btnRow.appendChild(h('button',{class:'btn btn-green btn-sm',onClick:async()=>{
-    try {
-      await api(`/matches/${match.id}/votes`,{method:'POST',body:JSON.stringify({
-        voter_player_id: myPlayerId, rank: ranked
-      })});
-      toast('Ranking enviado ✓');
-      overlay.remove();
-      onDone?.();
-    } catch(e) {
-      const msg = e.message.includes('already_voted') ? 'Ya votaste en este partido' : 'Error: '+e.message;
-      toast(msg,'err');
-    }
-  }},'Sí, confirmar'));
-  btnRow.appendChild(h('button',{class:'btn btn-ghost btn-sm',onClick:()=>{
-    confirmBox.style.display = 'none'; confirmBtn.style.display = 'block';
-  }},'Cancelar'));
-  confirmBox.appendChild(btnRow);
-  modal.appendChild(confirmBox);
-
-  const confirmBtn = h('button',{class:'btn btn-green',style:'width:100%;margin-top:8px',onClick:()=>{
-    confirmBtn.style.display = 'none';
-    confirmBox.style.display = 'block';
-  }},'Confirmar ranking →');
-  modal.appendChild(confirmBtn);
-
-  overlay.appendChild(modal);
-  document.body.appendChild(overlay);
+  dropZone.getRanked = () => ranked;
+  return dropZone;
 }
 
-async function openVotesAuditModal(match) {
-  if (!state.adminPin) { toast('Sesión de admin expirada — ingresá el PIN en la pestaña Admin.', 'err'); return; }
-
-  let voteData;
-  try {
-    voteData = await api(`/matches/${match.id}/votes`);
-  } catch(e) { toast('Error cargando votos', 'err'); return; }
+function openRankingModal(match, onDone) {
+  const winnerIds = match.winner_team === 'A' ? (match.team_a||[]) : (match.team_b||[]);
+  const loserIds  = match.winner_team === 'A' ? (match.team_b||[]) : (match.team_a||[]);
 
   const overlay = h('div', { class:'overlay', onClick: e => { if(e.target===overlay) overlay.remove(); } });
   const modal = h('div', { class:'modal' });
   const dateStr = match.played_at ? new Date(match.played_at).toLocaleDateString('es-AR',{day:'numeric',month:'long'}) : '—';
-
   modal.appendChild(h('div', { class:'modal-title' },
-    h('span',{},'⚡ Votos — partido ' + dateStr),
+    h('span',{},'🏆 Editar ranking — ' + dateStr),
     h('button',{class:'close-btn',onClick:()=>overlay.remove()},'×')
   ));
+  modal.appendChild(h('div',{style:'font-size:.78rem;color:var(--muted);margin-bottom:12px'},'Ordená cada equipo del mejor (1°) al peor con las flechas.'));
 
-  // Resumen
-  const total = voteData.total_participants || 10;
-  modal.appendChild(h('div',{style:'font-size:.8rem;color:var(--muted);margin-bottom:14px'},
-    `${voteData.votes_cast}/${total} votaron · cierra ${fmtDeadline(match.voting_deadline)}`
-  ));
+  modal.appendChild(h('div',{style:'font-size:.75rem;color:var(--muted2);font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px'},'🏆 Ganadores'));
+  const winnersList = mkRankList(winnerIds, match.rank_winners);
+  modal.appendChild(winnersList);
 
-  const teamA = match.team_a || [];
-  const teamB = match.team_b || [];
+  modal.appendChild(h('div',{style:'font-size:.75rem;color:var(--muted2);font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px'},'💔 Perdedores'));
+  const losersList = mkRankList(loserIds, match.rank_losers);
+  modal.appendChild(losersList);
 
-  function playerName(id) {
-    const p = state.players.find(x => x.id === id);
-    return p ? playerLabel(p) : `#${id}`;
-  }
-
-  // Votos individuales
-  const votes = voteData.individual_votes || [];
-  const votedIds = new Set(votes.map(v => v.voter_player_id));
-
-  // Todos los participantes ordenados: primero los que votaron, luego pendientes
-  const allParticipants = [...teamA, ...teamB].filter(pid => !state.players.find(x => x.id === pid)?.is_guest);
-
-  allParticipants.forEach(pid => {
-    const vote = votes.find(v => v.voter_player_id === pid);
-    const row = h('div',{style:'margin-bottom:10px;padding:8px 10px;background:rgba(255,255,255,.04);border-radius:8px;border:1px solid rgba(255,255,255,.07)'});
-
-    const header = h('div',{style:'display:flex;align-items:center;justify-content:space-between;margin-bottom:4px'});
-    header.appendChild(h('span',{style:'font-size:.85rem;font-weight:700;color:var(--text)'},playerName(pid)));
-
-    if (vote) {
-      const tag = vote.voted_by_admin
-        ? h('span',{style:'font-size:.7rem;color:var(--yellow);background:rgba(234,179,8,.12);border-radius:4px;padding:1px 6px'},'⚡ admin')
-        : h('span',{style:'font-size:.7rem;color:var(--green);background:rgba(34,197,94,.12);border-radius:4px;padding:1px 6px'},'✓ votó');
-      header.appendChild(tag);
-      row.appendChild(header);
-
-      const rankList = h('div',{style:'display:flex;flex-wrap:wrap;gap:4px;margin-top:4px'});
-      vote.rank.forEach((rid, idx) => {
-        const colors = ['#fbbf24','#e2e8f0','#cd7f32','var(--muted2)','var(--muted2)'];
-        rankList.appendChild(h('span',{style:`font-size:.75rem;background:rgba(255,255,255,.06);border-radius:4px;padding:2px 7px;color:${colors[idx]}`},
-          `${idx+1}° ${playerName(rid)}`
-        ));
-      });
-      row.appendChild(rankList);
-    } else {
-      header.appendChild(h('span',{style:'font-size:.7rem;color:var(--muted);background:rgba(255,255,255,.06);border-radius:4px;padding:1px 6px'},'pendiente'));
-      row.appendChild(header);
-    }
-
-    modal.appendChild(row);
-  });
-
-  if (!allParticipants.length) {
-    modal.appendChild(h('div',{style:'color:var(--muted);font-size:.85rem;text-align:center;padding:20px 0'},'Sin participantes registrados'));
-  }
-
-  overlay.appendChild(modal);
-  document.body.appendChild(overlay);
-}
-
-async function openAdminVoteModal(match, onDone) {
-  if (!state.adminPin) { toast('Sesión de admin expirada — ingresá el PIN en la pestaña Admin.', 'err'); return; }
-  const teamA = match.team_a || [];
-  const teamB = match.team_b || [];
-
-  let voteData;
-  try {
-    voteData = await api(`/matches/${match.id}/votes`);
-  } catch(e) { toast('Error cargando estado de votos', 'err'); return; }
-
-  const pendingVoters = voteData.pending_voters || [];
-  if (!pendingVoters.length) { toast('Todos los jugadores ya votaron', 'ok'); return; }
-
-  const overlay = h('div', { class:'overlay', onClick: e => { if(e.target===overlay) overlay.remove(); } });
-  const modal = h('div', { class:'modal' });
-  modal.appendChild(h('div', { class:'modal-title' },
-    h('span',{},'⚽ Rankear rival (admin)'),
-    h('button',{class:'close-btn',onClick:()=>overlay.remove()},'×')
-  ));
-  modal.appendChild(h('div',{style:'font-size:.78rem;color:var(--yellow);margin-bottom:10px'},'⚡ Modo administrador'));
-
-  modal.appendChild(h('div',{style:'font-size:.75rem;color:var(--muted2);margin-bottom:4px;font-weight:700;text-transform:uppercase'},'Votar a nombre de:'));
-  const sel = h('select',{style:'width:100%;background:#1e293b;border:1px solid rgba(255,255,255,.2);border-radius:8px;padding:8px;color:#f1f5f9;font-size:.9rem;margin-bottom:14px'});
-  pendingVoters.forEach(pv => {
-    sel.appendChild(h('option',{value:pv.player_id,style:'background:#1e293b;color:#f1f5f9'},pv.name));
-  });
-  modal.appendChild(sel);
-
-  const listWrap = h('div',{});
-  modal.appendChild(listWrap);
-
-  function renderForVoter(voterId) {
-    listWrap.innerHTML = '';
-    const voterInA = teamA.includes(Number(voterId));
-    const rivalIds = voterInA ? teamB : teamA;
-    let ranked = [...rivalIds];
-    let dragSrcIdx = null;
-    const dropZone = h('div',{class:'rank-drop-zone',style:'margin-bottom:14px'});
-
-    function renderList(hi=-1) {
-      dropZone.innerHTML = '';
-      ranked.forEach((pid, idx) => {
-        const p = state.players.find(x => x.id === pid);
-        const item = h('div',{class:'rank-item',draggable:'true'});
-        if(idx===hi) item.classList.add('moved');
-        const colors = ['#fbbf24','#e2e8f0','#cd7f32','var(--muted2)','var(--muted2)'];
-        item.appendChild(h('span',{style:`font-family:"Barlow Condensed",sans-serif;font-size:1.1rem;font-weight:900;color:${colors[idx]||'var(--muted)'};min-width:26px`},`${idx+1}°`));
-        item.appendChild(h('span',{style:'flex:1;font-size:.9rem'},p ? playerLabel(p) : `#${pid}`));
-        const btnUp = h('button',{style:`background:none;border:none;cursor:${idx===0?'default':'pointer'};padding:0 3px;font-size:.9rem;color:${idx===0?'var(--muted2)':'var(--muted)'};line-height:1`,onClick:e=>{e.stopPropagation();if(idx===0)return;[ranked[idx-1],ranked[idx]]=[ranked[idx],ranked[idx-1]];renderList(idx-1);}},'▲');
-        const btnDn = h('button',{style:`background:none;border:none;cursor:${idx===ranked.length-1?'default':'pointer'};padding:0 3px;font-size:.9rem;color:${idx===ranked.length-1?'var(--muted2)':'var(--muted)'};line-height:1`,onClick:e=>{e.stopPropagation();if(idx===ranked.length-1)return;[ranked[idx],ranked[idx+1]]=[ranked[idx+1],ranked[idx]];renderList(idx+1);}},'▼');
-        item.appendChild(btnUp);
-        item.appendChild(btnDn);
-        item.appendChild(h('span',{style:'color:var(--muted);font-size:1rem;cursor:grab;padding:0 4px'},'⠿'));
-        item.ondragstart = () => { dragSrcIdx = idx; setTimeout(()=>item.classList.add('dragging'),0); };
-        item.ondragend = () => { item.classList.remove('dragging'); dragSrcIdx = null; };
-        item.ondragover = e => e.preventDefault();
-        item.ondrop = e => {
-          e.preventDefault();
-          if (dragSrcIdx === null || dragSrcIdx === idx) return;
-          const moved = ranked.splice(dragSrcIdx,1)[0]; ranked.splice(idx,0,moved); renderList();
-        };
-        dropZone.appendChild(item);
-      });
-      dropZone.ondragover = e => { e.preventDefault(); dropZone.classList.add('drag-over'); };
-      dropZone.ondragleave = () => dropZone.classList.remove('drag-over');
-      dropZone.ondrop = e => { e.preventDefault(); dropZone.classList.remove('drag-over'); };
-    }
-    renderList();
-    listWrap.appendChild(dropZone);
-
-    const voterName = pendingVoters.find(pv => pv.player_id == voterId)?.name || `#${voterId}`;
-    const confirmBtn = h('button',{class:'btn btn-green',style:'width:100%',onClick:async()=>{
-      try {
-        await api(`/matches/${match.id}/votes`,{method:'POST',body:JSON.stringify({
-          voter_player_id: Number(voterId), rank: ranked
-        })});
-        toast(`Ranking de ${voterName} guardado ✓`);
-        overlay.remove();
-        onDone?.();
-      } catch(e) {
-        const msg = e.message.includes('already_voted') ? `${voterName} ya votó` : 'Error: '+e.message;
-        toast(msg,'err');
-      }
-    }},`Confirmar ranking de ${voterName} →`);
-    listWrap.appendChild(confirmBtn);
-  }
-
-  sel.addEventListener('change', () => renderForVoter(sel.value));
-  renderForVoter(pendingVoters[0].player_id);
-
-  overlay.appendChild(modal);
-  document.body.appendChild(overlay);
-}
-
-async function openModifyVoteModal(match, onDone) {
-  if (!state.adminPin) { toast('Sesión de admin expirada — ingresá el PIN en la pestaña Admin.', 'err'); return; }
-
-  let voteData;
-  try {
-    voteData = await api(`/matches/${match.id}/votes`);
-  } catch(e) { toast('Error cargando votos', 'err'); return; }
-
-  const voters = voteData.individual_votes || [];
-  if (!voters.length) { toast('No hay votos para modificar', 'err'); return; }
-
-  const teamA = match.team_a || [];
-  const teamB = match.team_b || [];
-
-  const overlay = h('div', { class:'overlay', onClick: e => { if(e.target===overlay) overlay.remove(); } });
-  const modal = h('div', { class:'modal' });
-  modal.appendChild(h('div', { class:'modal-title' },
-    h('span',{},'✏️ Modificar voto'),
-    h('button',{class:'close-btn',onClick:()=>overlay.remove()},'×')
-  ));
-  modal.appendChild(h('div',{style:'font-size:.78rem;color:var(--yellow);margin-bottom:6px'},'⚡ Modo administrador'));
-  modal.appendChild(h('div',{style:'font-size:.75rem;background:rgba(234,179,8,.1);border:1px solid rgba(234,179,8,.3);border-radius:6px;padding:8px 10px;margin-bottom:12px;color:#fbbf24'},
-    '⚠️ Esta acción reemplaza el voto del jugador y recalcula el ranking'
-  ));
-
-  modal.appendChild(h('div',{style:'font-size:.75rem;color:var(--muted2);margin-bottom:4px;font-weight:700;text-transform:uppercase'},'Modificar voto de:'));
-  const sel = h('select',{style:'width:100%;background:#1e293b;border:1px solid rgba(255,255,255,.2);border-radius:8px;padding:8px;color:#f1f5f9;font-size:.9rem;margin-bottom:14px'});
-  voters.forEach(v => {
-    sel.appendChild(h('option',{value:v.voter_player_id,style:'background:#1e293b;color:#f1f5f9'},v.voter_name));
-  });
-  modal.appendChild(sel);
-
-  const listWrap = h('div',{});
-  modal.appendChild(listWrap);
-
-  function renderForVoter(voterId) {
-    listWrap.innerHTML = '';
-    const vid = Number(voterId);
-    const voterInA = teamA.includes(vid);
-    const rivalIds = voterInA ? teamB : teamA;
-    const existingVote = voters.find(v => v.voter_player_id === vid);
-    let ranked = existingVote ? [...existingVote.rank] : [...rivalIds];
-    let dragSrcIdx = null;
-    const dropZone = h('div',{class:'rank-drop-zone',style:'margin-bottom:14px'});
-
-    function renderList(hi=-1) {
-      dropZone.innerHTML = '';
-      ranked.forEach((pid, idx) => {
-        const p = state.players.find(x => x.id === pid);
-        const item = h('div',{class:'rank-item',draggable:'true'});
-        if(idx===hi) item.classList.add('moved');
-        const colors = ['#fbbf24','#e2e8f0','#cd7f32','var(--muted2)','var(--muted2)'];
-        item.appendChild(h('span',{style:`font-family:"Barlow Condensed",sans-serif;font-size:1.1rem;font-weight:900;color:${colors[idx]||'var(--muted)'};min-width:26px`},`${idx+1}°`));
-        item.appendChild(h('span',{style:'flex:1;font-size:.9rem'},p ? playerLabel(p) : `#${pid}`));
-        const btnUp = h('button',{style:`background:none;border:none;cursor:${idx===0?'default':'pointer'};padding:0 3px;font-size:.9rem;color:${idx===0?'var(--muted2)':'var(--muted)'};line-height:1`,onClick:e=>{e.stopPropagation();if(idx===0)return;[ranked[idx-1],ranked[idx]]=[ranked[idx],ranked[idx-1]];renderList(idx-1);}},'▲');
-        const btnDn = h('button',{style:`background:none;border:none;cursor:${idx===ranked.length-1?'default':'pointer'};padding:0 3px;font-size:.9rem;color:${idx===ranked.length-1?'var(--muted2)':'var(--muted)'};line-height:1`,onClick:e=>{e.stopPropagation();if(idx===ranked.length-1)return;[ranked[idx],ranked[idx+1]]=[ranked[idx+1],ranked[idx]];renderList(idx+1);}},'▼');
-        item.appendChild(btnUp);
-        item.appendChild(btnDn);
-        item.appendChild(h('span',{style:'color:var(--muted);font-size:1rem;cursor:grab;padding:0 4px'},'⠿'));
-        item.ondragstart = () => { dragSrcIdx = idx; setTimeout(()=>item.classList.add('dragging'),0); };
-        item.ondragend = () => { item.classList.remove('dragging'); dragSrcIdx = null; };
-        item.ondragover = e => e.preventDefault();
-        item.ondrop = e => {
-          e.preventDefault();
-          if (dragSrcIdx === null || dragSrcIdx === idx) return;
-          const moved = ranked.splice(dragSrcIdx,1)[0]; ranked.splice(idx,0,moved); renderList();
-        };
-        dropZone.appendChild(item);
-      });
-      dropZone.ondragover = e => { e.preventDefault(); dropZone.classList.add('drag-over'); };
-      dropZone.ondragleave = () => dropZone.classList.remove('drag-over');
-      dropZone.ondrop = e => { e.preventDefault(); dropZone.classList.remove('drag-over'); };
-    }
-    renderList();
-    listWrap.appendChild(dropZone);
-
-    const voterName = voters.find(v => v.voter_player_id === vid)?.voter_name || `#${vid}`;
-    const confirmBtn = h('button',{class:'btn btn-green',style:'width:100%',onClick:async()=>{
-      try {
-        await api(`/matches/${match.id}/votes/${vid}`,{method:'PUT',body:JSON.stringify({
-          rank: ranked
-        })});
-        toast(`Voto de ${voterName} actualizado ✓`);
-        overlay.remove();
-        onDone?.();
-      } catch(e) {
-        toast('Error: '+e.message,'err');
-      }
-    }},`Guardar voto de ${voterName} →`);
-    listWrap.appendChild(confirmBtn);
-  }
-
-  sel.addEventListener('change', () => renderForVoter(sel.value));
-  renderForVoter(voters[0].voter_player_id);
+  const saveBtn = h('button',{class:'btn btn-green',style:'width:100%;margin-top:4px',onClick:async()=>{
+    try {
+      await api(`/matches/${match.id}/ranking`,{method:'PUT',body:JSON.stringify({
+        rank_winners: winnersList.getRanked(),
+        rank_losers: losersList.getRanked(),
+      })});
+      toast('Ranking guardado ✓');
+      overlay.remove();
+      onDone?.();
+    } catch(e) { toast('Error: '+e.message,'err'); }
+  }},'✓ Guardar ranking');
+  modal.appendChild(saveBtn);
 
   overlay.appendChild(modal);
   document.body.appendChild(overlay);
@@ -1848,7 +1532,6 @@ async function renderHistorial(root) {
         listWrap.appendChild(h('div',{class:'empty'},h('p',{},'No hay partidos aquí')));
         return;
       }
-      const lastMatchId = matches.filter(m => m.is_recorded).reduce((max, m) => Math.max(max, m.id), 0);
       matches.forEach(m => {
         const mc = h('div', { class:'match-card' });
 
@@ -1871,12 +1554,8 @@ async function renderHistorial(root) {
           mc.appendChild(h('div',{style:'font-size:.85rem;color:var(--muted2);margin-bottom:10px'},`📅 ${dateStr}`));
         }
 
-        const voteArea = h('div',{style:'margin-bottom:10px'});
-        mc.appendChild(voteArea);
-
         const teamsGrid = h('div', { style:'display:grid;grid-template-columns:1fr 1fr;gap:8px' });
 
-        let voteData = null;
         function buildTeams() {
           teamsGrid.innerHTML = '';
           const mkT = (ids, cls) => {
@@ -1885,15 +1564,12 @@ async function renderHistorial(root) {
             const isDraw = m.winner_team === 'D';
             const rankArr = isRecorded ? (teamWon ? (m.rank_winners||[]) : (m.rank_losers||[])) : [];
 
-            const votingOpen = m.voting_deadline && new Date(m.voting_deadline) > new Date();
-            const showPartial = votingOpen && !rankArr.length;
-
-            const sorted = showPartial ? ids : [...ids].sort((a, b) => {
+            const sorted = rankArr.length ? [...ids].sort((a, b) => {
               const pa = rankArr.indexOf(a), pb = rankArr.indexOf(b);
               if (pa === -1 && pb === -1) return 0;
               if (pa === -1) return 1; if (pb === -1) return -1;
               return pa - pb;
-            });
+            }) : ids;
 
             const box = h('div', { class:'team-box' });
             let headerExtra = '';
@@ -1904,30 +1580,26 @@ async function renderHistorial(root) {
             box.appendChild(h('div', { class:`team-header ${cls}`, style: headerStyle }, `${cls==='a'?'Equipo A':'Equipo B'}${headerExtra}`));
 
             const list = h('div', { class:'team-list' });
-            if (showPartial) {
-              list.appendChild(h('div',{style:'color:var(--muted);font-size:.8rem;font-style:italic;padding:6px 0'},'Ranking parcial…'));
-            } else {
-              sorted.forEach(id => {
-                const p = state.players.find(x=>x.id===id);
-                const rankPos = rankArr.indexOf(id);
-                const row = h('div', { class:'team-player' });
-                if (isRecorded && rankPos >= 0) {
-                  const colors = teamWon
-                    ? ['#fbbf24','#e2e8f0','#cd7f32','var(--muted2)','var(--muted2)']
-                    : ['var(--red)','var(--muted2)','var(--muted2)','var(--muted2)','var(--muted2)'];
-                  row.appendChild(h('span',{class:'rank-num',style:`color:${colors[rankPos]||'var(--muted)'}`},`${rankPos+1}°`));
-                } else {
-                  row.appendChild(h('span',{class:'rank-num'}));
-                }
-                row.appendChild(h('span',{style:`font-weight:${isRecorded&&rankPos===0?'700':'400'}`}, p ? playerLabel(p) : `#${id}`));
-                if (p?.is_guest) row.appendChild(h('span',{class:'badge',style:'background:rgba(234,179,8,.2);color:var(--yellow);margin-left:auto;font-size:.65rem'},'INV'));
-                if (isRecorded && !isDraw) {
-                  if (teamWon && rankPos === 0) row.appendChild(h('span',{class:'badge badge-win',style:'margin-left:auto'},'MVP'));
-                  else if (!teamWon && rankPos === 0) row.appendChild(h('span',{class:'badge badge-loss',style:'margin-left:auto'},'−'));
-                }
-                list.appendChild(row);
-              });
-            }
+            sorted.forEach(id => {
+              const p = state.players.find(x=>x.id===id);
+              const rankPos = rankArr.indexOf(id);
+              const row = h('div', { class:'team-player' });
+              if (isRecorded && rankPos >= 0) {
+                const colors = teamWon
+                  ? ['#fbbf24','#e2e8f0','#cd7f32','var(--muted2)','var(--muted2)']
+                  : ['var(--red)','var(--muted2)','var(--muted2)','var(--muted2)','var(--muted2)'];
+                row.appendChild(h('span',{class:'rank-num',style:`color:${colors[rankPos]||'var(--muted)'}`},`${rankPos+1}°`));
+              } else {
+                row.appendChild(h('span',{class:'rank-num'}));
+              }
+              row.appendChild(h('span',{style:`font-weight:${isRecorded&&rankPos===0?'700':'400'}`}, p ? playerLabel(p) : `#${id}`));
+              if (p?.is_guest) row.appendChild(h('span',{class:'badge',style:'background:rgba(234,179,8,.2);color:var(--yellow);margin-left:auto;font-size:.65rem'},'INV'));
+              if (isRecorded && !isDraw) {
+                if (teamWon && rankPos === 0) row.appendChild(h('span',{class:'badge badge-win',style:'margin-left:auto'},'MVP'));
+                else if (!teamWon && rankPos === 0) row.appendChild(h('span',{class:'badge badge-loss',style:'margin-left:auto'},'−'));
+              }
+              list.appendChild(row);
+            });
             box.appendChild(list);
             return box;
           };
@@ -1937,53 +1609,13 @@ async function renderHistorial(root) {
         buildTeams();
         mc.appendChild(teamsGrid);
 
-        if (m.is_recorded && m.winner_team !== 'D' && m.voting_deadline) {
-          const myPid = state.me?.player_id;
-          const playerParam = myPid ? `?player_id=${myPid}` : '';
-          api(`/matches/${m.id}/votes${playerParam}`).then(vd => {
-            voteData = vd;
-            const now = new Date();
-            const deadline = m.voting_deadline ? new Date(m.voting_deadline) : null;
-            const isOpen = deadline && now < deadline;
-            const myParticipated = myPid && ([...(m.team_a||[]),...(m.team_b||[])]).includes(myPid);
-
-            voteArea.innerHTML = '';
-            if (isOpen && myParticipated) {
-              const voteLine = h('div',{style:'display:flex;align-items:center;justify-content:space-between;margin-bottom:4px'});
-              if (vd.current_user_voted) {
-                voteLine.appendChild(h('span',{style:'display:inline-flex;align-items:center;gap:4px;background:rgba(34,197,94,.15);color:var(--green);border:1px solid rgba(34,197,94,.25);border-radius:6px;padding:3px 8px;font-size:.75rem;font-weight:700'},'✓ Votaste'));
-              } else {
-                const pillBtn = h('button',{class:'btn btn-sm',style:'background:rgba(234,179,8,.2);color:var(--yellow);border:1px solid rgba(234,179,8,.3);font-size:.75rem;font-weight:700',
-                  onClick:()=>openVoteModal(m, ()=>{ load(); updateHistorialBadge(); })},'⚽ Votar rival');
-                voteLine.appendChild(pillBtn);
-              }
-              voteLine.appendChild(h('span',{style:'font-size:.72rem;color:var(--muted)'},`${vd.votes_cast}/${vd.total_participants || 10} votaron · cierra ${fmtDeadline(m.voting_deadline)}`));
-              voteArea.appendChild(voteLine);
-            } else if (isOpen) {
-              voteArea.appendChild(h('div',{style:'font-size:.72rem;color:var(--muted);margin-bottom:4px'},`${vd.votes_cast}/${vd.total_participants || 10} votaron · cierra ${fmtDeadline(m.voting_deadline)}`));
-            }
-
-            if (vd.aggregate?.length) {
-              buildTeams();
-            }
-          }).catch(() => {});
-        }
-
         if (state.adminOk) {
           const actions = h('div',{style:'display:flex;gap:6px;margin-top:10px'});
           if (!m.is_recorded) {
             actions.appendChild(h('button',{class:'btn btn-green btn-sm',onClick:()=>openResultModal(m,()=>{load();})}, '⚽ Cargar resultado'));
-          } else if (m.winner_team !== 'D' && m.voting_deadline) {
-            if (new Date(m.voting_deadline) > new Date()) {
-              actions.appendChild(h('button',{class:'btn btn-sm',style:'background:rgba(234,179,8,.15);color:var(--yellow);border:1px solid rgba(234,179,8,.3)',
-                onClick:()=>openAdminVoteModal(m, ()=>{ load(); updateHistorialBadge(); })},'⚽ Votar por otro'));
-            }
-            if (m.id === lastMatchId) {
-              actions.appendChild(h('button',{class:'btn btn-sm',style:'background:rgba(168,85,247,.15);color:#d8b4fe;border:1px solid rgba(168,85,247,.3)',
-                onClick:()=>openModifyVoteModal(m, ()=>{ load(); })},'✏️ Modificar voto'));
-            }
-            actions.appendChild(h('button',{class:'btn btn-sm',style:'background:rgba(99,102,241,.15);color:#a5b4fc;border:1px solid rgba(99,102,241,.3)',
-              onClick:()=>openVotesAuditModal(m)},'⚡ Ver votos'));
+          } else if (m.winner_team !== 'D') {
+            actions.appendChild(h('button',{class:'btn btn-sm',style:'background:rgba(168,85,247,.15);color:#d8b4fe;border:1px solid rgba(168,85,247,.3)',
+              onClick:()=>openRankingModal(m, ()=>{ load(); })},'🏆 Editar ranking'));
           }
           actions.appendChild(h('button',{class:'btn btn-red btn-sm',onClick:async()=>{
             if(!confirm(`¿Eliminar partido #${m.id}?`)) return;
@@ -2966,7 +2598,6 @@ function renderPlayerAdmin(root) {
 async function init() {
   await loadAll();
   renderContent();
-  updateHistorialBadge();
 }
 init();
 </script>
