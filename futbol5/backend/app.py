@@ -53,6 +53,7 @@ class Player(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     counts_in_ranking = Column(Boolean, default=True, nullable=False)
     is_guest = Column(Boolean, default=False, nullable=False)
+    photo_url = Column(Text, nullable=True)
 
 class Preference(Base):
     __tablename__ = "preferences"
@@ -126,6 +127,7 @@ def _run_migrations():
         "ALTER TABLE players ADD COLUMN last_login TIMESTAMP",
         "ALTER TABLE players ADD COLUMN counts_in_ranking BOOLEAN DEFAULT 1",
         "ALTER TABLE players ADD COLUMN is_guest BOOLEAN DEFAULT 0",
+        "ALTER TABLE players ADD COLUMN photo_url TEXT",
         "ALTER TABLE matches ADD COLUMN voting_deadline TIMESTAMP",
         # match_votes is created by create_all(); this is a no-op fallback for SQLite only
     ]:
@@ -222,6 +224,7 @@ class PlayerIn(BaseModel):
     vision_min: float = Field(4,ge=1,le=10);  vision_max: float = Field(6,ge=1,le=10)
     stamina_min: float = Field(4,ge=1,le=10); stamina_max: float = Field(6,ge=1,le=10)
     speed_min: float = Field(4,ge=1,le=10);   speed_max: float = Field(6,ge=1,le=10)
+    photo_url: str | None = None
 
 class PlayerOut(PlayerIn):
     id: int; overall_expected: float
@@ -320,6 +323,18 @@ class PlayerTrendOut(BaseModel):
 class PlayerSeasonStat(BaseModel):
     player_id: int; name: str; gp: int; wins: int; losses: int; draws: int
     perf_points: int; win_rate: float
+
+class WrappedAward(BaseModel):
+    key: str
+    player_ids: List[int] = []
+    player_ids_b: List[int] = []
+    stat_value: str = ""
+    stat_label: str = ""
+    stat_sub: str = ""
+
+class WrappedOut(BaseModel):
+    year: int
+    awards: List[WrappedAward]
 
 class MatchHistoryEntry(BaseModel):
     match_id: int; played_at: datetime; winner_team: str
@@ -529,7 +544,7 @@ def player_out(p):
         shot_min=p.shot_min, shot_max=p.shot_max, passing_min=p.passing_min, passing_max=p.passing_max,
         defense_min=p.defense_min, defense_max=p.defense_max, vision_min=p.vision_min, vision_max=p.vision_max,
         stamina_min=p.stamina_min, stamina_max=p.stamina_max, speed_min=p.speed_min, speed_max=p.speed_max,
-        overall_expected=compute_overall(p), is_guest=bool(p.is_guest or False))
+        overall_expected=compute_overall(p), is_guest=bool(p.is_guest or False), photo_url=p.photo_url)
 
 # ---- ROUTES: PLAYERS ----
 @app.get("/players", response_model=List[PlayerOut])
@@ -1119,6 +1134,199 @@ def season_stats(year: int | None = None, date_from: str | None = None, date_to:
                 losses=losses, draws=draws, perf_points=perf,
                 win_rate=round(wins/gp*100, 1)))
     return sorted(out, key=lambda x: (-x.perf_points, -x.win_rate))
+
+@app.get("/stats/wrapped", response_model=WrappedOut)
+def stats_wrapped(year: int, db=Depends(get_session), _: None = Depends(check_admin)):
+    """Calcula los premios del 'Wrapped' del año a partir de los partidos jugados.
+    Admin-only. Cada premio se omite si no hay datos suficientes para sostenerlo."""
+    matches = db.query(Match).filter(
+        Match.is_recorded == True,
+        extract('year', Match.played_at) == year
+    ).order_by(Match.played_at.asc()).all()
+    guest_ids = {p.id for p in db.query(Player).filter(Player.is_guest.is_(True)).all()}
+
+    awards: List[WrappedAward] = []
+    if not matches:
+        return WrappedOut(year=year, awards=awards)
+
+    gp: Dict[int,int] = {}; wins: Dict[int,int] = {}; perf: Dict[int,int] = {}
+    results_by_player: Dict[int, list] = {}   # pid -> [(played_at, 'W'|'L'|'D')]
+    mvp_count: Dict[int,int] = {}              # 1° del equipo ganador
+    best_in_team_count: Dict[int,int] = {}     # 1° de su equipo, haya ganado o no
+
+    for m in matches:
+        ta = [x for x in (csv_split(m.team_a) or []) if x not in guest_ids]
+        tb = [x for x in (csv_split(m.team_b) or []) if x not in guest_ids]
+        rw = csv_split(m.rank_winners) or []
+        rl = csv_split(m.rank_losers) or []
+        for pid in ta + tb:
+            gp[pid] = gp.get(pid, 0) + 1
+            perf[pid] = perf.get(pid, 0) + _perf_score(pid, m)
+            team = 'A' if pid in ta else 'B'
+            if m.winner_team == 'D': res = 'D'
+            else: res = 'W' if m.winner_team == team else 'L'
+            if res == 'W': wins[pid] = wins.get(pid, 0) + 1
+            results_by_player.setdefault(pid, []).append((m.played_at, res))
+        if rw:
+            mvp_count[rw[0]] = mvp_count.get(rw[0], 0) + 1
+            best_in_team_count[rw[0]] = best_in_team_count.get(rw[0], 0) + 1
+        if rl:
+            best_in_team_count[rl[0]] = best_in_team_count.get(rl[0], 0) + 1
+
+    # 1. Líder del año
+    if perf:
+        leader_id = max(perf, key=perf.get)
+        awards.append(WrappedAward(key='leader', player_ids=[leader_id],
+            stat_value=str(perf[leader_id]), stat_label='puntos',
+            stat_sub=f"en {gp[leader_id]} partidos jugados"))
+
+    # 2. Más veces MVP
+    if mvp_count:
+        mvp_id = max(mvp_count, key=mvp_count.get)
+        awards.append(WrappedAward(key='mvp', player_ids=[mvp_id],
+            stat_value=str(mvp_count[mvp_id]), stat_label='veces MVP',
+            stat_sub=f"en {gp[mvp_id]} partidos jugados"))
+
+    # 3. Más veces 1° (gane o pierda su equipo)
+    if best_in_team_count:
+        bit_id = max(best_in_team_count, key=best_in_team_count.get)
+        awards.append(WrappedAward(key='best_in_team', player_ids=[bit_id],
+            stat_value=str(best_in_team_count[bit_id]), stat_label='veces 1° de su equipo',
+            stat_sub=f"en {gp[bit_id]} partidos jugados"))
+
+    # 4. Ironman
+    if gp:
+        iron_id = max(gp, key=gp.get)
+        awards.append(WrappedAward(key='ironman', player_ids=[iron_id],
+            stat_value=str(gp[iron_id]), stat_label='partidos jugados', stat_sub=''))
+
+    # 5. El más mejorado (rendimiento 1ra mitad vs 2da mitad del año, min 2 partidos en cada una)
+    mid = len(matches) // 2
+    first_half, second_half = matches[:mid], matches[mid:]
+    def _half_stats(subset):
+        p_perf: Dict[int,int] = {}; p_gp: Dict[int,int] = {}
+        for m in subset:
+            ta = [x for x in (csv_split(m.team_a) or []) if x not in guest_ids]
+            tb = [x for x in (csv_split(m.team_b) or []) if x not in guest_ids]
+            for pid in ta + tb:
+                p_gp[pid] = p_gp.get(pid, 0) + 1
+                p_perf[pid] = p_perf.get(pid, 0) + _perf_score(pid, m)
+        return p_perf, p_gp
+    perf1, gp1 = _half_stats(first_half)
+    perf2, gp2 = _half_stats(second_half)
+    improved_id, improved_delta = None, None
+    for pid in set(perf1) | set(perf2):
+        if gp1.get(pid, 0) < 2 or gp2.get(pid, 0) < 2: continue
+        delta = perf2.get(pid, 0) - perf1.get(pid, 0)
+        if improved_delta is None or delta > improved_delta:
+            improved_delta, improved_id = delta, pid
+    if improved_id is not None and improved_delta > 0:
+        awards.append(WrappedAward(key='most_improved', player_ids=[improved_id],
+            stat_value=f"+{improved_delta}", stat_label='pts de mejora',
+            stat_sub='entre la 1ra y la 2da mitad del año'))
+
+    # 6 & 7. Rachas (victorias / derrotas consecutivas)
+    best_win_streak = (None, 0); best_lose_streak = (None, 0)
+    for pid, seq in results_by_player.items():
+        seq_sorted = sorted(seq, key=lambda x: x[0])
+        cur_w = cur_l = max_w = max_l = 0
+        for _, res in seq_sorted:
+            cur_w = cur_w + 1 if res == 'W' else 0
+            cur_l = cur_l + 1 if res == 'L' else 0
+            max_w = max(max_w, cur_w); max_l = max(max_l, cur_l)
+        if max_w > best_win_streak[1]: best_win_streak = (pid, max_w)
+        if max_l > best_lose_streak[1]: best_lose_streak = (pid, max_l)
+    if best_win_streak[0] is not None and best_win_streak[1] >= 3:
+        awards.append(WrappedAward(key='win_streak', player_ids=[best_win_streak[0]],
+            stat_value=str(best_win_streak[1]), stat_label='victorias seguidas', stat_sub=''))
+    if best_lose_streak[0] is not None and best_lose_streak[1] >= 3:
+        awards.append(WrappedAward(key='lose_streak', player_ids=[best_lose_streak[0]],
+            stat_value=str(best_lose_streak[1]), stat_label='derrotas seguidas', stat_sub=''))
+
+    # 8, 9 & 10. Duplas (compañeros) y clásico interno (rivales)
+    partner_pairs: Dict[frozenset, list] = {}   # frozenset({a,b}) -> [gp, wins_together]
+    rival_pairs: Dict[tuple, list] = {}         # (a,b) -> [gp, a_wins_vs_b]
+    for m in matches:
+        ta = [x for x in (csv_split(m.team_a) or []) if x not in guest_ids]
+        tb = [x for x in (csv_split(m.team_b) or []) if x not in guest_ids]
+        a_won = m.winner_team == 'A'; b_won = m.winner_team == 'B'
+        for i in range(len(ta)):
+            for j in range(i+1, len(ta)):
+                s = partner_pairs.setdefault(frozenset((ta[i], ta[j])), [0, 0]); s[0] += 1
+                if a_won: s[1] += 1
+        for i in range(len(tb)):
+            for j in range(i+1, len(tb)):
+                s = partner_pairs.setdefault(frozenset((tb[i], tb[j])), [0, 0]); s[0] += 1
+                if b_won: s[1] += 1
+        for x in ta:
+            for y in tb:
+                s1 = rival_pairs.setdefault((x, y), [0, 0]); s1[0] += 1
+                if a_won: s1[1] += 1
+                s2 = rival_pairs.setdefault((y, x), [0, 0]); s2[0] += 1
+                if b_won: s2[1] += 1
+
+    best_duo, best_duo_wr = None, None
+    worst_duo, worst_duo_wr = None, None
+    for key, (g, w) in partner_pairs.items():
+        if g < 2: continue
+        wr = w / g
+        if best_duo_wr is None or wr > best_duo_wr: best_duo_wr, best_duo = wr, key
+        if worst_duo_wr is None or wr < worst_duo_wr: worst_duo_wr, worst_duo = wr, key
+    if best_duo:
+        g, w = partner_pairs[best_duo]
+        awards.append(WrappedAward(key='best_duo', player_ids=list(best_duo),
+            stat_value=f"{round(w/g*100)}%", stat_label='de victorias juntos',
+            stat_sub=f"{g} partidos juntos"))
+    if worst_duo:
+        g, w = partner_pairs[worst_duo]
+        awards.append(WrappedAward(key='worst_duo', player_ids=list(worst_duo),
+            stat_value=f"{round(w/g*100)}%", stat_label='de victorias juntos',
+            stat_sub=f"{g} partidos juntos"))
+
+    clasico_games: Dict[frozenset, int] = {}
+    for (x, y), (g, w) in rival_pairs.items():
+        key = frozenset((x, y))
+        if key not in clasico_games: clasico_games[key] = g
+    if clasico_games:
+        clasico_key = max(clasico_games, key=clasico_games.get)
+        if clasico_games[clasico_key] >= 2:
+            awards.append(WrappedAward(key='clasico', player_ids=list(clasico_key),
+                stat_value=str(clasico_games[clasico_key]), stat_label='enfrentamientos', stat_sub=''))
+
+    # 11. La paliza del año (mayor diferencia de gol en un partido)
+    blowout = None
+    for m in matches:
+        if m.winner_team not in ('A', 'B') or m.goal_diff is None: continue
+        if blowout is None or m.goal_diff > blowout.goal_diff: blowout = m
+    if blowout:
+        win_ids = [x for x in (csv_split(blowout.team_a) if blowout.winner_team=='A' else csv_split(blowout.team_b)) or [] if x not in guest_ids]
+        lose_ids = [x for x in (csv_split(blowout.team_b) if blowout.winner_team=='A' else csv_split(blowout.team_a)) or [] if x not in guest_ids]
+        date_str = blowout.played_at.strftime('%d/%m') if blowout.played_at else ''
+        awards.append(WrappedAward(key='paliza', player_ids=win_ids, player_ids_b=lose_ids,
+            stat_value=f"+{blowout.goal_diff}", stat_label='de diferencia', stat_sub=date_str))
+
+    # 12. Fondo de tabla (menor cantidad de puntos, min 3 partidos jugados)
+    colero_id, colero_perf = None, None
+    for pid, pts in perf.items():
+        if gp.get(pid, 0) < 3: continue
+        if colero_perf is None or pts < colero_perf: colero_perf, colero_id = pts, pid
+    if colero_id is not None:
+        awards.append(WrappedAward(key='bottom_table', player_ids=[colero_id],
+            stat_value=str(colero_perf), stat_label='puntos', stat_sub=f"en {gp[colero_id]} partidos jugados"))
+
+    # 13. Piedra en el zapato (peor % de victorias contra un rival específico, min 2 cruces)
+    worst_pair, worst_wr = None, None
+    for (x, y), (g, w) in rival_pairs.items():
+        if g < 2: continue
+        wr = w / g
+        if worst_wr is None or wr < worst_wr: worst_wr, worst_pair = wr, (x, y)
+    if worst_pair:
+        x, y = worst_pair
+        g, w = rival_pairs[worst_pair]
+        awards.append(WrappedAward(key='nemesis', player_ids=[x], player_ids_b=[y],
+            stat_value=f"{round(w/g*100)}%", stat_label='de victorias', stat_sub=f"en {g} cruces"))
+
+    return WrappedOut(year=year, awards=awards)
 
 @app.get("/players/{pid}/history", response_model=List[MatchHistoryEntry])
 def player_history(pid: int, db=Depends(get_session)):

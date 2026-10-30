@@ -377,6 +377,45 @@
     .ranking-name { flex-wrap: nowrap !important; }
     .ranking-name > span:first-child { min-width: 0; }
   }
+
+  /* WRAPPED */
+  .wr-pitch-bg {
+    background:
+      repeating-linear-gradient(135deg, rgba(255,255,255,.015) 0px, rgba(255,255,255,.015) 2px, transparent 2px, transparent 7px),
+      #0f2a1c;
+  }
+  .wr-phone { width: 100%; max-width: 390px; margin: 0 auto; min-height: 660px; border-radius: 14px; overflow: hidden; position: relative; display: flex; flex-direction: column; padding: 16px 14px 18px; box-shadow: 0 20px 50px rgba(0,0,0,.5); }
+  .wr-stub-row { display: flex; gap: 3px; margin-bottom: 14px; }
+  .wr-stub { flex: 1; height: 6px; border-radius: 1px; background: rgba(243,234,217,.14); }
+  .wr-stub.done { background: #e8b23d; }
+  .wr-ticket { flex: 1; background: #f3ead9; border-radius: 3px; position: relative; transform: rotate(-1deg); box-shadow: 0 14px 28px rgba(0,0,0,.4); padding: 18px 16px 14px; display: flex; flex-direction: column; color: #1c1309; font-family: 'Barlow', sans-serif; }
+  .wr-ticket::before { content: ''; position: absolute; top: -1px; left: 0; right: 0; height: 12px; background-image: radial-gradient(circle at 10px 0, transparent 6px, #0f2a1c 6.5px); background-size: 18px 12px; background-repeat: repeat-x; }
+  .wr-stamp { position: absolute; top: 12px; right: -8px; width: 78px; height: 78px; border-radius: 50%; border: 3px solid #b6392c; display: flex; align-items: center; justify-content: center; transform: rotate(14deg); color: #b6392c; font-family: 'Barlow Condensed', sans-serif; font-weight: 900; font-size: .6rem; letter-spacing: 1px; text-align: center; line-height: 1.15; white-space: pre-line; opacity: .9; }
+  .wr-kicker { font-weight: 700; font-size: .76rem; color: #b6392c; margin-bottom: 2px; }
+  .wr-award-name { font-family: 'Barlow Condensed', sans-serif; font-weight: 900; font-size: 1.7rem; line-height: 1; margin-bottom: 6px; max-width: 80%; }
+  .wr-award-desc { font-size: .8rem; opacity: .72; line-height: 1.3; margin-bottom: 12px; max-width: 92%; }
+  .wr-divider { border-top: 2px dashed #e3d6ba; margin: 2px 0 12px; }
+  .wr-avatar-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+  .wr-player-name { font-family: 'Barlow Condensed', sans-serif; font-weight: 900; font-size: 1.6rem; line-height: 1; }
+  .wr-stat-row { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+  .wr-stat-num { font-family: 'Barlow Condensed', sans-serif; font-weight: 900; font-size: 2.8rem; color: #b6392c; letter-spacing: -1px; line-height: .9; }
+  .wr-stat-unit { font-weight: 700; font-size: .9rem; }
+  .wr-stat-sub { font-size: .74rem; opacity: .6; }
+  .wr-recap-label { font-weight: 700; font-size: .76rem; opacity: .5; margin-bottom: 5px; }
+  .wr-recap-row { display: flex; align-items: baseline; justify-content: space-between; padding: 6px 0; border-bottom: 1px dashed #e3d6ba; font-size: .78rem; }
+  .wr-recap-row:last-child { border-bottom: none; }
+  .wr-recap-row .v { font-family: 'Barlow Condensed', sans-serif; font-weight: 900; font-size: 1.05rem; }
+  .wr-footer { display: flex; align-items: center; justify-content: space-between; border-top: 2px dashed #e3d6ba; padding-top: 8px; margin-top: 8px; font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: .72rem; opacity: .55; }
+  .wr-vs { font-family: 'Barlow Condensed', sans-serif; font-weight: 900; font-size: .95rem; opacity: .5; margin: 18px 4px 0; }
+  .wr-team-col { display: flex; flex-direction: column; gap: 6px; flex: 1; }
+  .wr-bottombar { display: flex; gap: 8px; margin-top: 14px; max-width: 390px; margin-left: auto; margin-right: auto; width: 100%; }
+  .wr-btn { flex: 1; font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: .95rem; padding: 11px 10px; border: none; cursor: pointer; border-radius: 2px; }
+  .wr-btn-dl { background: #e8b23d; color: #1c1309; }
+  .wr-btn-nav { background: transparent; color: #f3ead9; border: 2px solid rgba(243,234,217,.3); }
+  .wr-tapzone { position: absolute; top: 0; bottom: 0; width: 40%; cursor: pointer; z-index: 2; background: transparent; border: none; }
+  .wr-avatar { border-radius: 50%; overflow: hidden; flex-shrink: 0; border: 3px solid #f3ead9; outline: 2px solid #b6392c; background: #0f2a1c; display: flex; align-items: center; justify-content: center; }
+  .wr-avatar img { width: 100%; height: 100%; object-fit: cover; object-position: top center; }
+  .wr-avatar span { font-family: 'Barlow Condensed', sans-serif; font-weight: 900; color: #f3ead9; }
 </style>
 </head>
 <body>
@@ -1864,7 +1903,8 @@ async function renderStats(root) {
   };
   const updRanking = mkTabBtn('ranking','📊 Ranking');
   const updTemporada = mkTabBtn('temporada','🏆 Temporada');
-  const updateTabs = () => { updRanking(); updTemporada(); };
+  const updWrapped = state.adminOk ? mkTabBtn('wrapped','🎬 Wrapped') : null;
+  const updateTabs = () => { updRanking(); updTemporada(); if (updWrapped) updWrapped(); };
   updateTabs();
   root.appendChild(tabBar);
 
@@ -1877,6 +1917,7 @@ async function renderStats(root) {
     content.innerHTML = '<div class="spinner" style="display:block;margin:20px auto"></div>';
     try {
       if (statsTab === 'ranking') await renderRanking();
+      else if (statsTab === 'wrapped') await renderWrapped();
       else await renderTemporada();
     } catch(e) {
       content.innerHTML = '';
@@ -2072,7 +2113,318 @@ async function renderStats(root) {
     }
   }
 
+  // --- WRAPPED (solo admin) ---
+  async function renderWrapped() {
+    content.innerHTML = '';
+    const card = h('div',{class:'card'});
+    card.appendChild(h('div',{class:'card-title'},'🎬 Wrapped del año'));
+    card.appendChild(h('div',{style:'font-size:.78rem;color:var(--muted);margin-bottom:14px'},'Solo vos lo ves como admin. Elegí el año para armar el resumen.'));
+
+    const currentYear = new Date().getFullYear();
+    const years = [currentYear, currentYear - 1];
+    let selYear = currentYear;
+    let mode = 'stories';
+
+    const controlsRow = h('div',{style:'display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:16px'});
+    const yearWrap = h('div',{style:'display:flex;gap:6px'});
+    const yearBtns = {};
+    years.forEach(y => {
+      const btn = h('button',{style:'padding:5px 14px;border-radius:20px;border:1px solid var(--card-border);cursor:pointer;font-size:.85rem'},String(y));
+      btn.onclick = () => { selYear = y; updateYearBtns(); load(); };
+      yearBtns[y] = btn;
+      yearWrap.appendChild(btn);
+    });
+    const updateYearBtns = () => years.forEach(y => {
+      yearBtns[y].style.background = y===selYear ? 'var(--green)' : 'none';
+      yearBtns[y].style.color = y===selYear ? '#000' : 'var(--muted)';
+    });
+    updateYearBtns();
+    controlsRow.appendChild(yearWrap);
+
+    const modeBtn = h('button',{class:'btn btn-ghost btn-sm'},'▦ Ver todo en grilla');
+    modeBtn.onclick = () => {
+      mode = mode === 'stories' ? 'grid' : 'stories';
+      modeBtn.textContent = mode === 'stories' ? '▦ Ver todo en grilla' : '🎬 Ver como historias';
+      load();
+    };
+    controlsRow.appendChild(modeBtn);
+
+    card.appendChild(controlsRow);
+    const body = h('div',{});
+    card.appendChild(body);
+    content.appendChild(card);
+
+    async function load() {
+      body.innerHTML = '<div class="spinner" style="display:block;margin:20px auto"></div>';
+      try {
+        const [wrapped, season] = await Promise.all([
+          api(`/stats/wrapped?year=${selYear}`),
+          api(`/stats/season?year=${selYear}`),
+        ]);
+        const seasonMap = Object.fromEntries(season.map((s, i) => [s.player_id, { ...s, pos: i + 1 }]));
+        body.innerHTML = '';
+        const ordered = WRAPPED_ORDER.map(k => wrapped.awards.find(a => a.key === k)).filter(Boolean);
+        if (!ordered.length) {
+          body.appendChild(h('div',{class:'empty'},h('p',{},`No hay suficientes partidos jugados en ${selYear} para armar el Wrapped.`)));
+          return;
+        }
+        if (mode === 'stories') renderWrappedStories(ordered, seasonMap, selYear, body);
+        else renderWrappedGrid(ordered, seasonMap, selYear, body);
+      } catch(e) {
+        body.innerHTML = '';
+        body.appendChild(h('div',{class:'empty'},h('p',{},'Error: '+e.message)));
+      }
+    }
+
+    await load();
+  }
+
   await renderSection();
+}
+
+// ── WRAPPED: metadata y helpers ─────────────────────────
+const WRAPPED_META = {
+  leader:        { kicker:'Tabla general', title:'Líder del año', desc:'El jugador con más puntos de rendimiento acumulados en el año.', stamp:'N.º 1\nDEL AÑO' },
+  mvp:           { kicker:'Ranking de partido', title:'Más veces MVP', desc:'El jugador que más veces quedó 1° en el ranking de su equipo, jugando en el equipo que ganó.', stamp:'MÁS\nMVP' },
+  best_in_team:  { kicker:'Ranking de partido', title:'Más veces 1°', desc:'El jugador que más veces quedó 1° en el ranking de su equipo, haya ganado o perdido el partido.', stamp:'SIEMPRE\nARRIBA' },
+  ironman:       { kicker:'Asistencia', title:'Ironman', desc:'El que más partidos jugó en el año. Ni la lluvia lo paró.', stamp:'NUNCA\nFALTA' },
+  most_improved: { kicker:'Evolución', title:'El más mejorado', desc:'Mayor suba de rendimiento entre la primera y la segunda mitad del año.', stamp:'EN\nALZA' },
+  win_streak:    { kicker:'Rachas', title:'Racha más larga', desc:'La mayor cantidad de partidos ganados seguidos por un mismo jugador en el año.', stamp:'EN\nLLAMAS' },
+  lose_streak:   { kicker:'Rachas', title:'Mufa del año', desc:'La mayor cantidad de partidos perdidos seguidos por un mismo jugador en el año.', stamp:'MUFA' },
+  best_duo:      { kicker:'Compañeros', title:'Mejor dupla', desc:'La pareja de compañeros con mejor % de victorias jugando juntos.', stamp:'DUPLA\nDE ORO' },
+  worst_duo:     { kicker:'Compañeros', title:'Peor dupla', desc:'La pareja de compañeros con peor % de victorias jugando juntos.', stamp:'A\nSEPARAR' },
+  clasico:       { kicker:'Rivalidades', title:'Clásico interno', desc:'El par de jugadores que más veces se enfrentó entre sí en el año.', stamp:'EL\nCLÁSICO' },
+  paliza:        { kicker:'Resultados', title:'La paliza del año', desc:'El partido con mayor diferencia de goles del año.', stamp:'PALIZA' },
+  bottom_table:  { kicker:'Tabla general', title:'Fondo de tabla', desc:'El último de la tabla de rendimiento del año.', stamp:'FONDO\nDE TABLA' },
+  nemesis:       { kicker:'Rivalidades', title:'Piedra en el zapato', desc:'A quién le costó más ganarle: peor % de victorias contra un rival específico.', stamp:'SU\nCUCO' },
+};
+const WRAPPED_ORDER = ['leader','mvp','best_in_team','ironman','most_improved','win_streak','lose_streak','best_duo','worst_duo','clasico','paliza','bottom_table','nemesis'];
+const WRAPPED_DUO_KEYS = ['best_duo','worst_duo','clasico'];
+
+function wrName(pid) {
+  const p = state.players.find(x => x.id === pid);
+  return p ? p.name : `#${pid}`;
+}
+
+function wrAvatar(pid, size) {
+  size = size || 56;
+  const p = state.players.find(x => x.id === pid);
+  const wrap = h('div',{class:'wr-avatar',style:`width:${size}px;height:${size}px`});
+  if (p && p.photo_url) wrap.appendChild(h('img',{src:p.photo_url}));
+  else wrap.appendChild(h('span',{style:`font-size:${Math.round(size*0.32)}px`},(p?p.name:'?').slice(0,2).toUpperCase()));
+  return wrap;
+}
+
+function wrBuildTicket(award, meta, seasonMap, idx, total) {
+  const ticket = h('div',{class:'wr-ticket'});
+  ticket.appendChild(h('div',{class:'wr-stamp'}, meta.stamp));
+  ticket.appendChild(h('div',{class:'wr-kicker'}, meta.kicker + ' · temporada'));
+  ticket.appendChild(h('div',{class:'wr-award-name'}, meta.title));
+  ticket.appendChild(h('div',{class:'wr-award-desc'}, meta.desc));
+  ticket.appendChild(h('div',{class:'wr-divider'}));
+
+  const statBlock = () => h('div',{class:'wr-stat-row'},
+    h('div',{class:'wr-stat-num'}, award.stat_value),
+    h('div',{}, h('div',{class:'wr-stat-unit'}, award.stat_label), h('div',{class:'wr-stat-sub'}, award.stat_sub))
+  );
+
+  if (award.key === 'paliza') {
+    const row = h('div',{style:'display:flex;align-items:flex-start;margin-bottom:14px'});
+    const mkTeam = (ids, label) => {
+      const col = h('div',{class:'wr-team-col'});
+      col.appendChild(h('div',{style:'font-size:.7rem;font-weight:700;opacity:.55'}, label));
+      ids.forEach(pid => col.appendChild(h('div',{style:'font-size:.84rem;font-weight:600'}, wrName(pid))));
+      return col;
+    };
+    row.appendChild(mkTeam(award.player_ids, 'Ganó'));
+    row.appendChild(h('div',{class:'wr-vs'},'—'));
+    row.appendChild(mkTeam(award.player_ids_b, 'Perdió'));
+    ticket.appendChild(row);
+    ticket.appendChild(statBlock());
+  } else if (award.key === 'nemesis') {
+    ticket.appendChild(h('div',{class:'wr-avatar-row'}, wrAvatar(award.player_ids[0]), h('div',{class:'wr-player-name'}, wrName(award.player_ids[0]))));
+    ticket.appendChild(h('div',{style:'font-size:.82rem;opacity:.65;margin-bottom:10px'}, 'vs ' + wrName(award.player_ids_b[0])));
+    ticket.appendChild(statBlock());
+  } else if (WRAPPED_DUO_KEYS.includes(award.key)) {
+    const row = h('div',{class:'wr-avatar-row'});
+    award.player_ids.forEach((pid, i) => {
+      row.appendChild(wrAvatar(pid, 46));
+      row.appendChild(h('div',{class:'wr-player-name',style:'font-size:1.2rem'}, wrName(pid) + (i===0 ? ' &' : '')));
+    });
+    ticket.appendChild(row);
+    ticket.appendChild(statBlock());
+  } else {
+    const pid = award.player_ids[0];
+    ticket.appendChild(h('div',{class:'wr-avatar-row'}, wrAvatar(pid), h('div',{class:'wr-player-name'}, wrName(pid))));
+    ticket.appendChild(statBlock());
+    const s = seasonMap[pid];
+    if (s) {
+      ticket.appendChild(h('div',{class:'wr-divider'}));
+      ticket.appendChild(h('div',{class:'wr-recap-label'},'Su temporada'));
+      const mkRow = (l, v) => h('div',{class:'wr-recap-row'}, h('span',{},l), h('span',{class:'v'},v));
+      ticket.appendChild(mkRow('Partidos jugados', String(s.gp)));
+      ticket.appendChild(mkRow('Partidos ganados', String(s.wins)));
+      ticket.appendChild(mkRow('Winrate', s.win_rate + '%'));
+      ticket.appendChild(mkRow('Posición en la tabla', s.pos + '°'));
+    }
+  }
+
+  ticket.appendChild(h('div',{style:'flex:1'}));
+  ticket.appendChild(h('div',{class:'wr-footer'},
+    h('span',{}, `N.º ${String(idx+1).padStart(2,'0')}/${total} · WRAPPED`),
+    h('span',{},'F5 ★★★')
+  ));
+  return ticket;
+}
+
+function wrSvgToCanvas(node, width, height) {
+  return new Promise((resolve, reject) => {
+    const xml = new XMLSerializer().serializeToString(node);
+    const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">`
+      + `<foreignObject width="100%" height="100%">`
+      + `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${width}px;height:${height}px;display:flex;align-items:center;justify-content:center;background:#0f2a1c;font-family:Barlow,sans-serif">${xml}</div>`
+      + `</foreignObject></svg>`;
+    const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = height;
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+      URL.revokeObjectURL(url);
+      resolve(canvas);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('No se pudo renderizar la tarjeta')); };
+    img.src = url;
+  });
+}
+
+function wrLoadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('foto no disponible'));
+    img.src = src;
+  });
+}
+
+async function wrDownloadCard(award, meta, seasonMap, year, idx, total) {
+  const ticket = wrBuildTicket(award, meta, seasonMap, idx, total);
+  const EXPORT_W = 358, ZOOM = 2.6;
+  ticket.style.flex = 'none';
+  ticket.style.minHeight = '600px';
+  const wrapper = h('div',{style:`width:${EXPORT_W}px;zoom:${ZOOM};position:fixed;left:-9999px;top:0`}, ticket);
+  document.body.appendChild(wrapper);
+
+  // Las fotos embebidas adentro del SVG "taintean" el canvas, así que las
+  // sacamos antes de rasterizar y las dibujamos aparte, directo sobre el canvas.
+  const wrapRect = wrapper.getBoundingClientRect();
+  const avatarJobs = [];
+  wrapper.querySelectorAll('.wr-avatar img').forEach(img => {
+    const r = img.getBoundingClientRect();
+    avatarJobs.push({ src: img.src, x: r.left - wrapRect.left, y: r.top - wrapRect.top, w: r.width, h: r.height });
+    img.remove();
+  });
+
+  const W = Math.round(EXPORT_W * ZOOM), H = Math.round(600 * ZOOM);
+  let canvas;
+  try {
+    canvas = await wrSvgToCanvas(wrapper, W, H);
+  } catch(e) {
+    wrapper.remove();
+    toast('No se pudo descargar la imagen: ' + e.message, 'err');
+    return;
+  }
+  wrapper.remove();
+
+  const ctx = canvas.getContext('2d');
+  for (const job of avatarJobs) {
+    try {
+      const img = await wrLoadImage(job.src);
+      const cx = job.x + job.w / 2, cy = job.y + job.h / 2, r = job.w / 2;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.drawImage(img, job.x, job.y, job.w, job.h);
+      ctx.restore();
+    } catch(e) { /* si una foto falla, la tarjeta se descarga igual sin ella */ }
+  }
+
+  try {
+    const dataUrl = canvas.toDataURL('image/png');
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = `wrapped-${year}-${award.key}.png`;
+    document.body.appendChild(a); a.click(); a.remove();
+  } catch(e) {
+    toast('No se pudo descargar la imagen: ' + e.message, 'err');
+  }
+}
+
+function renderWrappedStories(awards, seasonMap, year, container) {
+  container.innerHTML = '';
+  let idx = 0, timer = null;
+  const DURATION = 6000;
+
+  const phone = h('div',{class:'wr-phone wr-pitch-bg'});
+  const stubRow = h('div',{class:'wr-stub-row'});
+  const ticketSlot = h('div',{style:'flex:1;display:flex;flex-direction:column;position:relative'});
+  const tapLeft = h('div',{class:'wr-tapzone',style:'left:0'});
+  const tapRight = h('div',{class:'wr-tapzone',style:'right:0'});
+  phone.appendChild(stubRow); phone.appendChild(ticketSlot);
+  ticketSlot.appendChild(tapLeft); ticketSlot.appendChild(tapRight);
+  container.appendChild(phone);
+
+  const bottomBar = h('div',{class:'wr-bottombar'});
+  const dlBtn = h('button',{class:'wr-btn wr-btn-dl'},'Descargar');
+  const navBtn = h('button',{class:'wr-btn wr-btn-nav'},'Siguiente →');
+  bottomBar.appendChild(dlBtn); bottomBar.appendChild(navBtn);
+  container.appendChild(bottomBar);
+
+  function renderStubs() {
+    stubRow.innerHTML = '';
+    awards.forEach((_, i) => stubRow.appendChild(h('div',{class:'wr-stub' + (i <= idx ? ' done' : '')})));
+  }
+
+  function goNext() { idx === awards.length - 1 ? show(0) : show(idx + 1); }
+  function goPrev() { show(Math.max(0, idx - 1)); }
+
+  function show(i) {
+    idx = i;
+    renderStubs();
+    const existing = ticketSlot.querySelector('.wr-ticket');
+    if (existing) existing.remove();
+    const award = awards[idx];
+    const meta = WRAPPED_META[award.key];
+    const ticket = wrBuildTicket(award, meta, seasonMap, idx, awards.length);
+    ticketSlot.insertBefore(ticket, tapLeft);
+    navBtn.textContent = idx === awards.length - 1 ? 'Volver al inicio ↺' : 'Siguiente →';
+    dlBtn.onclick = () => wrDownloadCard(award, meta, seasonMap, year, idx, awards.length);
+    if (timer) clearInterval(timer);
+    timer = setInterval(() => { if (idx < awards.length - 1) show(idx + 1); else clearInterval(timer); }, DURATION);
+  }
+
+  tapLeft.onclick = goPrev;
+  tapRight.onclick = goNext;
+  navBtn.onclick = goNext;
+
+  show(0);
+}
+
+function renderWrappedGrid(awards, seasonMap, year, container) {
+  container.innerHTML = '';
+  const grid = h('div',{style:'display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px'});
+  awards.forEach((award, idx) => {
+    const meta = WRAPPED_META[award.key];
+    const wrap = h('div',{class:'wr-pitch-bg',style:'border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:10px;min-height:560px'});
+    wrap.appendChild(wrBuildTicket(award, meta, seasonMap, idx, awards.length));
+    const dlBtn = h('button',{class:'wr-btn wr-btn-dl',style:'width:100%'},'Descargar');
+    dlBtn.onclick = () => wrDownloadCard(award, meta, seasonMap, year, idx, awards.length);
+    wrap.appendChild(dlBtn);
+    grid.appendChild(wrap);
+  });
+  container.appendChild(grid);
 }
 
 // =========================================================
@@ -2502,6 +2854,10 @@ function renderPlayerAdmin(root) {
     state.players.filter(p => !p.is_guest).forEach(p => {
       const row = h('div',{class:'player-chip',style:'margin-bottom:6px'});
       const left2 = h('div',{style:'display:flex;align-items:center;gap:8px;flex:1'});
+      const avatarWrap = h('div',{style:'width:24px;height:24px;border-radius:50%;overflow:hidden;background:var(--bg2);display:flex;align-items:center;justify-content:center;flex-shrink:0'});
+      if (p.photo_url) avatarWrap.appendChild(h('img',{src:p.photo_url,style:'width:100%;height:100%;object-fit:cover;object-position:top center'}));
+      else avatarWrap.appendChild(h('span',{style:'font-size:.6rem;font-weight:700;color:var(--muted)'},(p.name||'?').slice(0,2).toUpperCase()));
+      left2.appendChild(avatarWrap);
       left2.appendChild(h('span',{class:'player-name'},p.name));
       if(p.is_goalkeeper) left2.appendChild(h('span',{class:'badge badge-gk'},'GK'));
       left2.appendChild(h('span',{style:'color:var(--muted);font-size:.8rem'},`OVR: ${ovr(p)}`));
@@ -2547,6 +2903,41 @@ function renderPlayerAdmin(root) {
     const gkCb = h('input',{type:'checkbox'}); gkCb.checked = p?.is_goalkeeper||false;
     formCard.appendChild(h('div',{class:'field'},h('label',{class:'check-row'},gkCb,'Es arquero')));
 
+    let photoDataUrl = p?.photo_url || null;
+    const photoPreview = h('div',{style:'width:64px;height:64px;border-radius:50%;overflow:hidden;background:var(--bg2);display:flex;align-items:center;justify-content:center;flex-shrink:0;border:2px solid var(--card-border)'});
+    const renderPhotoPreview = () => {
+      photoPreview.innerHTML = '';
+      if (photoDataUrl) photoPreview.appendChild(h('img',{src:photoDataUrl,style:'width:100%;height:100%;object-fit:cover;object-position:top center'}));
+      else photoPreview.appendChild(h('span',{style:'font-family:"Barlow Condensed",sans-serif;font-weight:900;color:var(--muted)'},(nameInp.value||'?').slice(0,2).toUpperCase()));
+    };
+    renderPhotoPreview();
+    const photoInp = h('input',{type:'file',accept:'image/*',style:'font-size:.8rem'});
+    photoInp.onchange = () => {
+      const file = photoInp.files[0];
+      if (!file) return;
+      const img = new Image();
+      const reader = new FileReader();
+      reader.onload = () => {
+        img.onload = () => {
+          const maxDim = 480;
+          const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+          const w = Math.round(img.width * scale), h2 = Math.round(img.height * scale);
+          const canvas = document.createElement('canvas');
+          canvas.width = w; canvas.height = h2;
+          canvas.getContext('2d').drawImage(img, 0, 0, w, h2);
+          photoDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+          renderPhotoPreview();
+        };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    };
+    const removePhotoBtn = h('button',{class:'btn btn-ghost btn-sm',type:'button',onClick:()=>{ photoDataUrl=null; photoInp.value=''; renderPhotoPreview(); }},'Quitar foto');
+    formCard.appendChild(h('div',{class:'field'},h('label',{},'Foto'),
+      h('div',{style:'display:flex;align-items:center;gap:12px'}, photoPreview,
+        h('div',{style:'display:flex;flex-direction:column;gap:6px'}, photoInp, removePhotoBtn))
+    ));
+
     formCard.appendChild(h('div',{style:'font-size:.8rem;color:var(--muted2);margin:10px 0 6px'},'Atributos (rango min–max, visión valor único):'));
     attrs.forEach(a => {
       if (a === 'vision') {
@@ -2571,7 +2962,7 @@ function renderPlayerAdmin(root) {
     const btnRow = h('div',{style:'display:flex;gap:8px;margin-top:12px;flex-wrap:wrap'});
     const saveBtn = h('button',{class:'btn btn-green',onClick:async()=>{
       const body = {
-        name: nameInp.value.trim(), is_goalkeeper: gkCb.checked,
+        name: nameInp.value.trim(), is_goalkeeper: gkCb.checked, photo_url: photoDataUrl,
         ...Object.fromEntries(attrs.flatMap(a=>[[ `${a}_min`,vals[a][0]],[`${a}_max`,vals[a][1]]]))
       };
       if (!body.name) { toast('Ingresá un nombre','err'); return; }
