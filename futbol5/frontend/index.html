@@ -2325,9 +2325,35 @@ function wrBuildTicket(award, meta, seasonMap, idx, total) {
     ticket.appendChild(statBlock());
   } else {
     const pid = award.player_ids[0];
-    ticket.appendChild(h('div',{class:'wr-avatar-row'}, wrAvatar(pid), h('div',{class:'wr-player-name'}, wrName(pid))));
+    const coWinners = award.player_ids.length > 1;
+    if (coWinners) {
+      // Empate en el 1°: co-ganadores, todos en grande
+      const row = h('div',{class:'wr-avatar-row'});
+      award.player_ids.forEach((id, i) => {
+        row.appendChild(wrAvatar(id, 46));
+        row.appendChild(h('div',{class:'wr-player-name',style:'font-size:1.2rem'},
+          wrName(id) + (i < award.player_ids.length - 1 ? (i === award.player_ids.length - 2 ? ' y' : ',') : '')));
+      });
+      ticket.appendChild(row);
+      ticket.appendChild(h('div',{style:'font-size:.72rem;font-weight:700;opacity:.55;margin:-6px 0 10px'},'🤝 Co-ganadores'));
+    } else {
+      ticket.appendChild(h('div',{class:'wr-avatar-row'}, wrAvatar(pid), h('div',{class:'wr-player-name'}, wrName(pid))));
+    }
     ticket.appendChild(statBlock());
-    const s = seasonMap[pid];
+    // Podio: 2° y 3° en chico, debajo del ganador (solo premios positivos de tabla)
+    if (award.podium && award.podium.length) {
+      const pod = h('div',{style:'display:flex;flex-direction:column;gap:4px;margin:-4px 0 12px'});
+      award.podium.forEach(e => {
+        pod.appendChild(h('div',{style:'display:flex;align-items:baseline;gap:8px;font-size:.84rem'},
+          h('span',{style:'font-family:"Barlow Condensed",sans-serif;font-weight:900;opacity:.45;min-width:22px'}, e.pos + '°'),
+          h('span',{style:'font-weight:600;flex:1'}, wrName(e.player_id)),
+          h('span',{style:'font-family:"Barlow Condensed",sans-serif;font-weight:900;font-size:1rem;color:#b6392c'}, e.value)
+        ));
+      });
+      ticket.appendChild(pod);
+    }
+    // "Su temporada" solo tiene sentido con un único ganador
+    const s = coWinners ? null : seasonMap[pid];
     if (s) {
       ticket.appendChild(h('div',{class:'wr-divider'}));
       ticket.appendChild(h('div',{class:'wr-recap-label'},'Su temporada'));

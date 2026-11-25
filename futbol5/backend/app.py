@@ -324,8 +324,14 @@ class PlayerSeasonStat(BaseModel):
     player_id: int; name: str; gp: int; wins: int; losses: int; draws: int
     perf_points: int; win_rate: float
 
+class WrappedPodium(BaseModel):
+    pos: int            # puesto (los empatados comparten número)
+    player_id: int
+    value: str
+
 class WrappedAward(BaseModel):
     key: str
+    podium: List[WrappedPodium] = []   # 2° y 3° (solo premios positivos de tabla)
     player_ids: List[int] = []
     player_ids_b: List[int] = []
     stat_value: str = ""
@@ -1177,43 +1183,49 @@ def stats_wrapped(year: int, db=Depends(get_session), _: None = Depends(check_ad
         if rl:
             best_in_team_count[rl[0]] = best_in_team_count.get(rl[0], 0) + 1
 
+    def _ranked_award(key, metric, fmt, label, sub='', tie=None, ok=None):
+        """Premio de tabla con podio (opción B de empates):
+        - Si varios empatan en el 1°, son co-ganadores (todos en player_ids).
+        - El resto de los 3 lugares va en `podium`; los empatados comparten puesto.
+        - Siempre se muestran 3 nombres en total; si hay más empatados de los que
+          entran, decide el desempate `tie` (tupla, menor = mejor).
+        `sub`: texto fijo, o función pid -> texto (solo se usa con un único ganador)."""
+        cands = [pid for pid in metric if ok is None or ok(pid)]
+        if not cands: return
+        order = sorted(cands, key=lambda pid: (-metric[pid],) + (tie(pid) if tie else ()))[:3]
+        pos = lambda pid: 1 + sum(1 for q in cands if metric[q] > metric[pid])
+        winners = [pid for pid in order if pos(pid) == 1]
+        rest = [pid for pid in order if pos(pid) != 1]
+        w = winners[0]
+        stat_sub = sub if isinstance(sub, str) else (sub(w) if len(winners) == 1 else '')
+        awards.append(WrappedAward(key=key, player_ids=winners, stat_value=fmt(w),
+            stat_label=label, stat_sub=stat_sub,
+            podium=[WrappedPodium(pos=pos(pid), player_id=pid, value=fmt(pid)) for pid in rest]))
+
+    # Desempates cuando hay más empatados que lugares: en premios de "cantidad" tiene
+    # más mérito quien lo logró en menos partidos; en asistencia, quien ganó más.
+    fewer_gp = lambda pid: (gp.get(pid, 0),)
+    more_wins = lambda pid: (-wins.get(pid, 0),)
+
     # 1. Líder del año
-    if perf:
-        leader_id = max(perf, key=perf.get)
-        awards.append(WrappedAward(key='leader', player_ids=[leader_id],
-            stat_value=str(perf[leader_id]), stat_label='puntos',
-            stat_sub=f"en {gp[leader_id]} partidos jugados"))
+    _ranked_award('leader', perf, lambda pid: str(perf[pid]), 'puntos',
+                  sub=lambda pid: f"en {gp[pid]} partidos jugados", tie=fewer_gp)
 
     # 2. Más veces MVP
-    if mvp_count:
-        mvp_id = max(mvp_count, key=mvp_count.get)
-        awards.append(WrappedAward(key='mvp', player_ids=[mvp_id],
-            stat_value=str(mvp_count[mvp_id]), stat_label='veces MVP',
-            stat_sub=f"en {gp[mvp_id]} partidos jugados"))
+    _ranked_award('mvp', mvp_count, lambda pid: str(mvp_count[pid]), 'veces MVP',
+                  sub=lambda pid: f"en {gp[pid]} partidos jugados", tie=fewer_gp)
 
     # 3. Más veces 1° (gane o pierda su equipo)
-    if best_in_team_count:
-        bit_id = max(best_in_team_count, key=best_in_team_count.get)
-        awards.append(WrappedAward(key='best_in_team', player_ids=[bit_id],
-            stat_value=str(best_in_team_count[bit_id]), stat_label='veces 1° de su equipo',
-            stat_sub=f"en {gp[bit_id]} partidos jugados"))
+    _ranked_award('best_in_team', best_in_team_count, lambda pid: str(best_in_team_count[pid]),
+                  'veces 1° de su equipo', sub=lambda pid: f"en {gp[pid]} partidos jugados", tie=fewer_gp)
 
-    # 4. Mejor winrate (min 3 partidos jugados)
-    best_wr_id, best_wr = None, None
-    for pid in gp:
-        if gp[pid] < 3: continue
-        wr = wins.get(pid, 0) / gp[pid]
-        if best_wr is None or wr > best_wr: best_wr, best_wr_id = wr, pid
-    if best_wr_id is not None:
-        awards.append(WrappedAward(key='best_winrate', player_ids=[best_wr_id],
-            stat_value=f"{round(best_wr*100)}%", stat_label='de victorias',
-            stat_sub=f"{wins.get(best_wr_id,0)} de {gp[best_wr_id]} partidos"))
+    # 4. Mejor winrate (min 3 partidos jugados). A igual %, más mérito con más partidos.
+    wr_map = {pid: wins.get(pid, 0) / gp[pid] for pid in gp if gp[pid] >= 3}
+    _ranked_award('best_winrate', wr_map, lambda pid: f"{round(wr_map[pid]*100)}%", 'de victorias',
+                  sub=lambda pid: f"{wins.get(pid,0)} de {gp[pid]} partidos", tie=lambda pid: (-gp[pid],))
 
     # 5. Ironman
-    if gp:
-        iron_id = max(gp, key=gp.get)
-        awards.append(WrappedAward(key='ironman', player_ids=[iron_id],
-            stat_value=str(gp[iron_id]), stat_label='partidos jugados', stat_sub=''))
+    _ranked_award('ironman', gp, lambda pid: str(gp[pid]), 'partidos jugados', tie=more_wins)
 
     # 5. El más mejorado (rendimiento 1ra mitad vs 2da mitad del año, min 2 partidos en cada una)
     mid = len(matches) // 2
@@ -1229,19 +1241,16 @@ def stats_wrapped(year: int, db=Depends(get_session), _: None = Depends(check_ad
         return p_perf, p_gp
     perf1, gp1 = _half_stats(first_half)
     perf2, gp2 = _half_stats(second_half)
-    improved_id, improved_delta = None, None
+    deltas: Dict[int,int] = {}
     for pid in set(perf1) | set(perf2):
         if gp1.get(pid, 0) < 2 or gp2.get(pid, 0) < 2: continue
-        delta = perf2.get(pid, 0) - perf1.get(pid, 0)
-        if improved_delta is None or delta > improved_delta:
-            improved_delta, improved_id = delta, pid
-    if improved_id is not None and improved_delta > 0:
-        awards.append(WrappedAward(key='most_improved', player_ids=[improved_id],
-            stat_value=f"+{improved_delta}", stat_label='pts de mejora',
-            stat_sub='entre la 1ra y la 2da mitad del año'))
+        deltas[pid] = perf2.get(pid, 0) - perf1.get(pid, 0)
+    _ranked_award('most_improved', deltas, lambda pid: f"+{deltas[pid]}", 'pts de mejora',
+                  sub='entre la 1ra y la 2da mitad del año', tie=fewer_gp, ok=lambda pid: deltas[pid] > 0)
 
     # 6 & 7. Rachas (victorias / derrotas consecutivas)
     best_win_streak = (None, 0); best_lose_streak = (None, 0)
+    win_streaks: Dict[int,int] = {}
     for pid, seq in results_by_player.items():
         seq_sorted = sorted(seq, key=lambda x: x[0])
         cur_w = cur_l = max_w = max_l = 0
@@ -1249,11 +1258,11 @@ def stats_wrapped(year: int, db=Depends(get_session), _: None = Depends(check_ad
             cur_w = cur_w + 1 if res == 'W' else 0
             cur_l = cur_l + 1 if res == 'L' else 0
             max_w = max(max_w, cur_w); max_l = max(max_l, cur_l)
+        win_streaks[pid] = max_w
         if max_w > best_win_streak[1]: best_win_streak = (pid, max_w)
         if max_l > best_lose_streak[1]: best_lose_streak = (pid, max_l)
-    if best_win_streak[0] is not None and best_win_streak[1] >= 3:
-        awards.append(WrappedAward(key='win_streak', player_ids=[best_win_streak[0]],
-            stat_value=str(best_win_streak[1]), stat_label='victorias seguidas', stat_sub=''))
+    _ranked_award('win_streak', win_streaks, lambda pid: str(win_streaks[pid]), 'victorias seguidas',
+                  tie=fewer_gp, ok=lambda pid: win_streaks[pid] >= 3)
     if best_lose_streak[0] is not None and best_lose_streak[1] >= 3:
         awards.append(WrappedAward(key='lose_streak', player_ids=[best_lose_streak[0]],
             stat_value=str(best_lose_streak[1]), stat_label='derrotas seguidas', stat_sub=''))
@@ -1375,10 +1384,9 @@ def stats_wrapped(year: int, db=Depends(get_session), _: None = Depends(check_ad
     if gd_cands:
         gd_id = max(gd_cands, key=lambda pid: (gd_cands[pid], -gp[pid]))
         v = gd_cands[gd_id]
-        if v > 0:
-            awards.append(WrappedAward(key='goal_diff_total', player_ids=[gd_id],
-                stat_value=f"+{v}", stat_label='goles de diferencia',
-                stat_sub=f"sumados en sus {gp[gd_id]} partidos"))
+        _ranked_award('goal_diff_total', gd_cands, lambda pid: f"+{gd_cands[pid]}", 'goles de diferencia',
+                      sub=lambda pid: f"sumados en sus {gp[pid]} partidos", tie=fewer_gp,
+                      ok=lambda pid: gd_cands[pid] > 0)
         # Contracara: el que más goles en contra acumuló (peor diferencia neta).
         # A igual diferencia, "gana" el que jugó menos partidos.
         gc_id = min(gd_cands, key=lambda pid: (gd_cands[pid], gp[pid]))
@@ -1401,15 +1409,9 @@ def stats_wrapped(year: int, db=Depends(get_session), _: None = Depends(check_ad
             cur = cur + 1 if i in s else 0
             best = max(best, cur)
         return best
-    fijo_id, fijo_streak = None, 0
-    for pid, s in present.items():
-        st_ = _attend_streak(s)
-        if st_ > fijo_streak or (st_ == fijo_streak and fijo_id is not None and gp[pid] > gp[fijo_id]):
-            fijo_id, fijo_streak = pid, st_
-    if fijo_id is not None and fijo_streak >= 4:
-        awards.append(WrappedAward(key='attendance_streak', player_ids=[fijo_id],
-            stat_value=str(fijo_streak), stat_label='partidos seguidos sin faltar',
-            stat_sub=f"{gp[fijo_id]} jugados en el año"))
+    attend = {pid: _attend_streak(s) for pid, s in present.items()}
+    _ranked_award('attendance_streak', attend, lambda pid: str(attend[pid]), 'partidos seguidos sin faltar',
+                  sub=lambda pid: f"{gp[pid]} jugados en el año", tie=more_wins, ok=lambda pid: attend[pid] >= 4)
 
     # 17. Farolito rojo: más veces último del equipo perdedor (ranking completo, 4+ posiciones).
     # A igual cantidad, "gana" el que jugó menos partidos (proporcionalmente le pasó más).
