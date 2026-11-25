@@ -394,13 +394,8 @@ def _perf_score(pid, m):
         if pos <= 3: return -1
         return -2  # pos 4 sin ser el último registrado
 
-    # No rankeado
-    if m.winner_team in ("A", "B"):
-        win_ids  = csv_split(m.team_a) if m.winner_team == "A" else csv_split(m.team_b)
-        lose_ids = csv_split(m.team_b) if m.winner_team == "A" else csv_split(m.team_a)
-        if pid in (win_ids or []):  return 0
-        if pid in (lose_ids or []): return -2
-
+    # No rankeado: el partido cuenta como jugado/ganado/perdido para el winrate,
+    # pero sin ranking cargado no hay base para premiar ni penalizar el rendimiento.
     return 0
 
 def _in_match(pid, m):
@@ -1144,7 +1139,10 @@ def stats_wrapped(year: int, db=Depends(get_session), _: None = Depends(check_ad
         Match.is_recorded == True,
         extract('year', Match.played_at) == year
     ).order_by(Match.played_at.asc()).all()
-    guest_ids = {p.id for p in db.query(Player).filter(Player.is_guest.is_(True)).all()}
+    # Invitados y jugadores que no rankean (counts_in_ranking=False) no compiten por premios:
+    # se los saca de todos los cálculos del Wrapped.
+    guest_ids = {p.id for p in db.query(Player).all()
+                 if p.is_guest or p.counts_in_ranking is False}
 
     awards: List[WrappedAward] = []
     if not matches:
@@ -1359,6 +1357,85 @@ def stats_wrapped(year: int, db=Depends(get_session), _: None = Depends(check_ad
         awards.append(WrappedAward(key='nemesis', player_ids=[x], player_ids_b=[y],
             stat_value=f"{round(w/g*100)}%", stat_label='de victorias', stat_sub=f"en {g} cruces"))
 
+    # 15. Diferencia de goles del año: suma la diferencia de cada partido ganado y resta la de cada perdido
+    gd_total: Dict[int,int] = {}
+    for m in matches:
+        if m.winner_team not in ('A', 'B') or m.goal_diff is None: continue
+        ta = [x for x in (csv_split(m.team_a) or []) if x not in guest_ids]
+        tb = [x for x in (csv_split(m.team_b) or []) if x not in guest_ids]
+        for pid in ta + tb:
+            won = (m.winner_team == 'A') == (pid in ta)
+            gd_total[pid] = gd_total.get(pid, 0) + (m.goal_diff if won else -m.goal_diff)
+    gd_cands = {pid: v for pid, v in gd_total.items() if gp.get(pid, 0) >= 3}
+    if gd_cands:
+        gd_id = max(gd_cands, key=lambda pid: (gd_cands[pid], -gp[pid]))
+        v = gd_cands[gd_id]
+        if v > 0:
+            awards.append(WrappedAward(key='goal_diff_total', player_ids=[gd_id],
+                stat_value=f"+{v}", stat_label='goles de diferencia',
+                stat_sub=f"sumados en sus {gp[gd_id]} partidos"))
+
+    # 16. El fijo: más jueves seguidos jugando (racha de presencia), desempata quien jugó más
+    match_idx = {m.id: i for i, m in enumerate(matches)}
+    present: Dict[int, set] = {}
+    for m in matches:
+        for pid in (csv_split(m.team_a) or []) + (csv_split(m.team_b) or []):
+            if pid in guest_ids: continue
+            present.setdefault(pid, set()).add(match_idx[m.id])
+    def _attend_streak(s):
+        best = cur = 0
+        for i in range(len(matches)):
+            cur = cur + 1 if i in s else 0
+            best = max(best, cur)
+        return best
+    fijo_id, fijo_streak = None, 0
+    for pid, s in present.items():
+        st_ = _attend_streak(s)
+        if st_ > fijo_streak or (st_ == fijo_streak and fijo_id is not None and gp[pid] > gp[fijo_id]):
+            fijo_id, fijo_streak = pid, st_
+    if fijo_id is not None and fijo_streak >= 4:
+        awards.append(WrappedAward(key='attendance_streak', player_ids=[fijo_id],
+            stat_value=str(fijo_streak), stat_label='partidos seguidos sin faltar',
+            stat_sub=f"{gp[fijo_id]} jugados en el año"))
+
+    # 17. Farolito rojo: más veces último del equipo perdedor (ranking completo, 4+ posiciones).
+    # A igual cantidad, "gana" el que jugó menos partidos (proporcionalmente le pasó más).
+    last_count: Dict[int,int] = {}
+    for m in matches:
+        rl = csv_split(m.rank_losers) or []
+        if len(rl) >= 4 and rl[-1] not in guest_ids:
+            last_count[rl[-1]] = last_count.get(rl[-1], 0) + 1
+    if last_count:
+        far_id = max(last_count, key=lambda pid: (last_count[pid], -gp.get(pid, 0)))
+        if last_count[far_id] >= 2:
+            awards.append(WrappedAward(key='farolito', player_ids=[far_id],
+                stat_value=str(last_count[far_id]), stat_label='veces último del que perdió',
+                stat_sub=f"en {gp.get(far_id, 0)} partidos jugados"))
+
+    # 18 & 19. Puro humo / El tapado: puesto por OVR (el que muestra la app) vs puesto por
+    # rendimiento (puntos por partido). Solo jugadores con una cantidad mínima de partidos.
+    min_gp = max(3, len(matches) // 4)
+    eligible = [pid for pid in gp if gp[pid] >= min_gp]
+    if len(eligible) >= 5:
+        pl_map = {p.id: p for p in db.query(Player).filter(Player.id.in_(eligible)).all()}
+        ovr = {pid: overall_from_vals(combined_attr_vals(db, pid, admin_attr_vals(pl_map[pid])),
+                                      pl_map[pid].is_goalkeeper)
+               for pid in eligible if pid in pl_map}
+        ppg = {pid: perf.get(pid, 0) / gp[pid] for pid in ovr}
+        by_ovr = sorted(ovr, key=lambda pid: -ovr[pid])
+        by_ppg = sorted(ovr, key=lambda pid: -ppg[pid])
+        r_ovr = {pid: i + 1 for i, pid in enumerate(by_ovr)}
+        r_ppg = {pid: i + 1 for i, pid in enumerate(by_ppg)}
+        gap = {pid: r_ppg[pid] - r_ovr[pid] for pid in ovr}   # >0: rinde peor de lo que dice su OVR
+        def _award_gap(key, pid):
+            awards.append(WrappedAward(key=key, player_ids=[pid],
+                stat_value=f"{r_ovr[pid]}° → {r_ppg[pid]}°", stat_label='de OVR a rendimiento',
+                stat_sub=f"OVR {ovr[pid]:.1f} · {ppg[pid]:.2f} pts por partido"))
+        humo_id = max(gap, key=lambda pid: (gap[pid], gp[pid]))
+        if gap[humo_id] >= 2: _award_gap('puro_humo', humo_id)
+        tapado_id = min(gap, key=lambda pid: (gap[pid], -gp[pid]))
+        if gap[tapado_id] <= -2: _award_gap('tapado', tapado_id)
+
     return WrappedOut(year=year, awards=awards)
 
 @app.get("/players/{pid}/history", response_model=List[MatchHistoryEntry])
@@ -1416,6 +1493,25 @@ def player_chemistry(pid: int, db=Depends(get_session)):
     return ChemistryOut(
         best_partner_id=bp_id, best_partner_name=player_map.get(bp_id) if bp_id else None, best_partner_win_rate=bp_wr,
         worst_rival_id=br_id, worst_rival_name=player_map.get(br_id) if br_id else None, worst_rival_win_rate=br_wr)
+
+@app.get("/players/{pid}/self_eval")
+def player_self_eval(pid: int, db=Depends(get_session), _: None = Depends(check_admin)):
+    """Admin-only: cómo se autoevaluó el jugador (min/max por atributo).
+    Devuelve {"self_eval": null} si no cargó autoevaluación."""
+    user_ids = [u.id for u in db.query(User).filter(User.player_id == pid).all()]
+    q = db.query(Opinion).filter(Opinion.target_player_id == pid)
+    # Mismo criterio que /admin/participation: si el usuario no tiene player_id, su id se toma como player id
+    ops = [o for o in q.all() if o.actor_user_id in user_ids or
+           (o.actor_user_id == pid and not db.query(User).filter(User.id == pid, User.player_id != None).first())]
+    if not ops:
+        return {"self_eval": None}
+    o = ops[0]
+    attrs = ["shot","passing","defense","vision","stamina","speed"]
+    return {"self_eval": {
+        "min": {a: getattr(o, f"{a}_min") for a in attrs},
+        "max": {a: getattr(o, f"{a}_max") for a in attrs},
+        "created_at": o.created_at.isoformat() if o.created_at else None,
+    }}
 
 @app.get("/players/{pid}/partners")
 def player_partners(pid: int, min_games: int = 2, db=Depends(get_session)):
