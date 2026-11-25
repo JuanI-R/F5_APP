@@ -2247,12 +2247,10 @@ const WRAPPED_META = {
   nemesis:       { kicker:'Rivalidades', title:'Piedra en el zapato', desc:'A quién le costó más ganarle: peor % de victorias contra un rival específico.', stamp:'SU\nCUCO' },
   goal_diff_total:   { kicker:'Resultados', title:'Diferencia de goles', desc:'Suma de la diferencia de goles de cada partido que ganó, menos la de cada partido que perdió.', stamp:'+/-\nDEL AÑO' },
   goals_against:     { kicker:'Resultados', title:'Colador del año', desc:'El que más goles en contra acumuló: la peor diferencia de goles sumando todos sus partidos.', stamp:'COLADOR' },
-  attendance_streak: { kicker:'Asistencia', title:'El fijo', desc:'La mayor cantidad de jueves seguidos jugando, sin faltar a ninguno.', stamp:'EL\nFIJO' },
+  attendance_streak: { kicker:'Asistencia', title:'El fijo', desc:'La mayor cantidad de partidos registrados seguidos jugando, sin faltar a ninguno.', stamp:'EL\nFIJO' },
   farolito:          { kicker:'Ranking de partido', title:'Farolito rojo', desc:'El que más veces quedó último en el ranking del equipo que perdió.', stamp:'FAROLITO\nROJO' },
-  puro_humo:         { kicker:'OVR vs cancha', title:'Puro humo', desc:'El que más puestos baja entre su OVR y su rendimiento real (puntos por partido).', stamp:'PURO\nHUMO' },
-  tapado:            { kicker:'OVR vs cancha', title:'El tapado', desc:'El que más puestos sube entre su OVR y su rendimiento real (puntos por partido).', stamp:'EL\nTAPADO' },
 };
-const WRAPPED_ORDER = ['leader','mvp','best_in_team','best_winrate','goal_diff_total','ironman','attendance_streak','most_improved','tapado','win_streak','lose_streak','best_duo','worst_duo','clasico','paliza','bottom_table','goals_against','farolito','puro_humo','nemesis'];
+const WRAPPED_ORDER = ['leader','mvp','best_in_team','best_winrate','goal_diff_total','ironman','attendance_streak','most_improved','win_streak','lose_streak','best_duo','worst_duo','clasico','paliza','bottom_table','goals_against','farolito','nemesis'];
 const WRAPPED_DUO_KEYS = ['best_duo','worst_duo'];
 
 function wrName(pid) {

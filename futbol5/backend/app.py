@@ -1425,30 +1425,6 @@ def stats_wrapped(year: int, db=Depends(get_session), _: None = Depends(check_ad
                 stat_value=str(last_count[far_id]), stat_label='veces último del que perdió',
                 stat_sub=f"en {gp.get(far_id, 0)} partidos jugados"))
 
-    # 18 & 19. Puro humo / El tapado: puesto por OVR (el que muestra la app) vs puesto por
-    # rendimiento (puntos por partido). Solo jugadores con una cantidad mínima de partidos.
-    min_gp = max(3, len(matches) // 4)
-    eligible = [pid for pid in gp if gp[pid] >= min_gp]
-    if len(eligible) >= 5:
-        pl_map = {p.id: p for p in db.query(Player).filter(Player.id.in_(eligible)).all()}
-        ovr = {pid: overall_from_vals(combined_attr_vals(db, pid, admin_attr_vals(pl_map[pid])),
-                                      pl_map[pid].is_goalkeeper)
-               for pid in eligible if pid in pl_map}
-        ppg = {pid: perf.get(pid, 0) / gp[pid] for pid in ovr}
-        by_ovr = sorted(ovr, key=lambda pid: -ovr[pid])
-        by_ppg = sorted(ovr, key=lambda pid: -ppg[pid])
-        r_ovr = {pid: i + 1 for i, pid in enumerate(by_ovr)}
-        r_ppg = {pid: i + 1 for i, pid in enumerate(by_ppg)}
-        gap = {pid: r_ppg[pid] - r_ovr[pid] for pid in ovr}   # >0: rinde peor de lo que dice su OVR
-        def _award_gap(key, pid):
-            awards.append(WrappedAward(key=key, player_ids=[pid],
-                stat_value=f"{r_ovr[pid]}° → {r_ppg[pid]}°", stat_label='de OVR a rendimiento',
-                stat_sub=f"OVR {ovr[pid]:.1f} · {ppg[pid]:.2f} pts por partido"))
-        humo_id = max(gap, key=lambda pid: (gap[pid], gp[pid]))
-        if gap[humo_id] >= 2: _award_gap('puro_humo', humo_id)
-        tapado_id = min(gap, key=lambda pid: (gap[pid], -gp[pid]))
-        if gap[tapado_id] <= -2: _award_gap('tapado', tapado_id)
-
     return WrappedOut(year=year, awards=awards)
 
 @app.get("/players/{pid}/history", response_model=List[MatchHistoryEntry])
