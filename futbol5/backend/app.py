@@ -394,8 +394,13 @@ def _perf_score(pid, m):
         if pos <= 3: return -1
         return -2  # pos 4 sin ser el último registrado
 
-    # No rankeado: el partido cuenta como jugado/ganado/perdido para el winrate,
-    # pero sin ranking cargado no hay base para premiar ni penalizar el rendimiento.
+    # Partido sin ranking cargado: el partido existió, así que cuenta igual para todos
+    # dentro de cada equipo: +1 a cada ganador, -1 a cada perdedor (empate: 0).
+    if not rw and not rl and m.winner_team in ("A", "B"):
+        win_ids  = csv_split(m.team_a) if m.winner_team == "A" else csv_split(m.team_b)
+        lose_ids = csv_split(m.team_b) if m.winner_team == "A" else csv_split(m.team_a)
+        if pid in (win_ids or []):  return 1
+        if pid in (lose_ids or []): return -1
     return 0
 
 def _in_match(pid, m):
@@ -1374,6 +1379,14 @@ def stats_wrapped(year: int, db=Depends(get_session), _: None = Depends(check_ad
             awards.append(WrappedAward(key='goal_diff_total', player_ids=[gd_id],
                 stat_value=f"+{v}", stat_label='goles de diferencia',
                 stat_sub=f"sumados en sus {gp[gd_id]} partidos"))
+        # Contracara: el que más goles en contra acumuló (peor diferencia neta).
+        # A igual diferencia, "gana" el que jugó menos partidos.
+        gc_id = min(gd_cands, key=lambda pid: (gd_cands[pid], gp[pid]))
+        v = gd_cands[gc_id]
+        if v < 0 and gc_id != gd_id:
+            awards.append(WrappedAward(key='goals_against', player_ids=[gc_id],
+                stat_value=str(v), stat_label='goles de diferencia en contra',
+                stat_sub=f"sumados en sus {gp[gc_id]} partidos"))
 
     # 16. El fijo: más jueves seguidos jugando (racha de presencia), desempata quien jugó más
     match_idx = {m.id: i for i, m in enumerate(matches)}
