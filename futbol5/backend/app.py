@@ -338,10 +338,16 @@ class WrappedAward(BaseModel):
     stat_label: str = ""
     stat_sub: str = ""
     flag: bool = False
+    lines: List[List[str]] = []        # filas extra [etiqueta, valor] (Wrapped por jugador)
 
 class WrappedOut(BaseModel):
     year: int
     awards: List[WrappedAward]
+
+class PlayerWrappedOut(BaseModel):
+    player_id: int
+    year: int
+    cards: List[WrappedAward]
 
 class MatchHistoryEntry(BaseModel):
     match_id: int; played_at: datetime; winner_team: str
@@ -1428,6 +1434,227 @@ def stats_wrapped(year: int, db=Depends(get_session), _: None = Depends(check_ad
                 stat_sub=f"en {gp.get(far_id, 0)} partidos jugados"))
 
     return WrappedOut(year=year, awards=awards)
+
+MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto',
+         'septiembre', 'octubre', 'noviembre', 'diciembre']
+
+@app.get("/stats/wrapped/player/{pid}", response_model=PlayerWrappedOut)
+def stats_wrapped_player(pid: int, year: int, db=Depends(get_session)):
+    """Wrapped individual de un jugador: tarjetas de su temporada, duplas, rivales y premios.
+    Público (todos pueden ver el de todos). Cada tarjeta se omite si no hay datos."""
+    pl = db.query(Player).get(pid)
+    if not pl: raise HTTPException(404, "Jugador no encontrado")
+    all_players = db.query(Player).all()
+    names = {p.id: p.name for p in all_players}
+    guest_ids = {p.id for p in all_players if p.is_guest}
+    matches = db.query(Match).filter(
+        Match.is_recorded == True,
+        extract('year', Match.played_at) == year
+    ).order_by(Match.played_at.asc()).all()
+
+    cards: List[WrappedAward] = []
+    teams = {m.id: (csv_split(m.team_a) or [], csv_split(m.team_b) or []) for m in matches}
+    mine = [m for m in matches if pid in teams[m.id][0] + teams[m.id][1]]
+    if not mine:
+        return PlayerWrappedOut(player_id=pid, year=year, cards=cards)
+
+    def my_team(m): return 'A' if pid in teams[m.id][0] else 'B'
+    def result(m):
+        if m.winner_team not in ('A', 'B'): return 'D'
+        return 'W' if m.winner_team == my_team(m) else 'L'
+    sign = lambda v: f"+{v}" if v > 0 else str(v)
+
+    gp = len(mine)
+    w = sum(1 for m in mine if result(m) == 'W')
+    l = sum(1 for m in mine if result(m) == 'L')
+    d = gp - w - l
+    perf = sum(_perf_score(pid, m) for m in mine)
+    table = season_stats(year=year, date_from=None, date_to=None, ranked_only=True, db=db)
+    pos = next((i + 1 for i, s in enumerate(table) if s.player_id == pid), None)
+    pos_txt = f"{pos}° en la tabla del año" if pos else "no participa de la tabla"
+
+    # 1. Portada: su temporada
+    cards.append(WrappedAward(key='p_season', player_ids=[pid], stat_value=sign(perf),
+        stat_label='puntos de rendimiento', stat_sub=pos_txt,
+        lines=[['Partidos jugados', str(gp)],
+               ['Ganados · empatados · perdidos', f"{w} · {d} · {l}"],
+               ['Winrate', f"{round(w / gp * 100)}%"]]))
+
+    # 2. Su mejor partido: la victoria por más goles (a igual diferencia, la que mejor rankeó)
+    def my_rank(m):
+        for lst in (csv_split(m.rank_winners) or [], csv_split(m.rank_losers) or []):
+            if pid in lst: return lst.index(pid) + 1
+        return None
+    won = [m for m in mine if result(m) == 'W' and m.goal_diff is not None]
+    if won:
+        best = max(won, key=lambda m: (m.goal_diff, -(my_rank(m) or 9), m.played_at))
+        ta, tb = teams[best.id]
+        win_ids = ta if best.winner_team == 'A' else tb
+        lose_ids = tb if best.winner_team == 'A' else ta
+        rw = csv_split(best.rank_winners) or []
+        if rw:
+            win_ids = [x for x in rw if x in win_ids] + [x for x in win_ids if x not in rw]
+        r = my_rank(best)
+        sub = best.played_at.strftime('%d/%m') if best.played_at else ''
+        if r: sub += f" · fue {r}° de su equipo"
+        cards.append(WrappedAward(key='p_best_match', player_ids=win_ids, player_ids_b=lose_ids,
+            stat_value=f"+{best.goal_diff}", stat_label='de diferencia', stat_sub=sub, flag=bool(rw)))
+
+    # 3. Sus podios en el ranking de cada partido
+    ranked = [m for m in mine if csv_split(m.rank_winners) or csv_split(m.rank_losers)]
+    if ranked:
+        first_w = sum(1 for m in ranked if (csv_split(m.rank_winners) or [None])[0] == pid)
+        first_l = sum(1 for m in ranked if (csv_split(m.rank_losers) or [None])[0] == pid)
+        last_l = sum(1 for m in ranked
+                     if len(csv_split(m.rank_losers) or []) >= 4 and csv_split(m.rank_losers)[-1] == pid)
+        cards.append(WrappedAward(key='p_podiums', player_ids=[pid], stat_value=str(first_w + first_l),
+            stat_label='veces 1° de su equipo', stat_sub=f"en {len(ranked)} partidos con ranking",
+            lines=[['1° del que ganó (MVP)', str(first_w)],
+                   ['1° del que perdió', str(first_l)],
+                   ['Último del que perdió', str(last_l)]]))
+
+    # 4. Rachas: victorias seguidas, partidos seguidos sin faltar, racha actual
+    max_w = cur_w = 0
+    for m in mine:
+        cur_w = cur_w + 1 if result(m) == 'W' else 0
+        max_w = max(max_w, cur_w)
+    att = cur_a = 0
+    for m in matches:
+        cur_a = cur_a + 1 if m in mine else 0
+        att = max(att, cur_a)
+    last_res = result(mine[-1]); now = 0
+    for m in reversed(mine):
+        if result(m) != last_res: break
+        now += 1
+    now_txt = {'W': 'victoria', 'L': 'derrota', 'D': 'empate'}[last_res] + ('s' if now > 1 else '')
+    cards.append(WrappedAward(key='p_streaks', player_ids=[pid], stat_value=str(max_w),
+        stat_label='victorias seguidas', stat_sub='su mejor racha del año',
+        lines=[['Partidos seguidos sin faltar', str(att)],
+               ['Racha actual', f"{now} {now_txt}"]]))
+
+    # 5. Diferencia de gol acumulada
+    gd_list = [(m.goal_diff if result(m) == 'W' else -m.goal_diff)
+               for m in mine if m.winner_team in ('A', 'B') and m.goal_diff is not None]
+    if gd_list:
+        tot = sum(gd_list)
+        lines = [['Promedio por partido', f"{tot / len(gd_list):+.1f}"]]
+        if max(gd_list) > 0: lines.append(['Mejor resultado', sign(max(gd_list))])
+        if min(gd_list) < 0: lines.append(['Peor resultado', str(min(gd_list))])
+        cards.append(WrappedAward(key='p_goal_diff', player_ids=[pid], stat_value=sign(tot),
+            stat_label='goles de diferencia', stat_sub=f"sumados en sus {len(gd_list)} partidos", lines=lines))
+
+    # 6. Su mejor mes (más puntos de rendimiento; desempata más victorias)
+    months: Dict[int, list] = {}   # mes -> [puntos, jugados, ganados]
+    for m in mine:
+        s = months.setdefault(m.played_at.month, [0, 0, 0])
+        s[0] += _perf_score(pid, m); s[1] += 1; s[2] += 1 if result(m) == 'W' else 0
+    if len(months) >= 2:
+        bm = max(months, key=lambda k: (months[k][0], months[k][2]))
+        p_, g_, w_ = months[bm]
+        cards.append(WrappedAward(key='p_best_month', player_ids=[pid], stat_value=sign(p_),
+            stat_label=f"puntos en {MESES[bm - 1]}", stat_sub=f"ganó {w_} de {g_} partidos",
+            lines=[[MESES[k - 1].capitalize(), f"{sign(v[0])} pts · {v[2]}/{v[1]} ganados"]
+                   for k, v in sorted(months.items())]))
+
+    # Compañeros y rivales
+    together: Dict[int, list] = {}   # compañero -> [partidos, ganados]
+    versus: Dict[int, list] = {}     # rival -> [partidos, le gané, me ganó]
+    for m in mine:
+        ta, tb = teams[m.id]
+        mates, rivals = (ta, tb) if my_team(m) == 'A' else (tb, ta)
+        r = result(m)
+        for q in mates:
+            if q == pid or q in guest_ids: continue
+            s = together.setdefault(q, [0, 0]); s[0] += 1; s[1] += 1 if r == 'W' else 0
+        for q in rivals:
+            if q in guest_ids: continue
+            s = versus.setdefault(q, [0, 0, 0]); s[0] += 1
+            if r == 'W': s[1] += 1
+            elif r == 'L': s[2] += 1
+
+    # 7-9. Duplas
+    cands = {}
+    for min_g in (4, 3, 2):
+        cands = {q: v for q, v in together.items() if v[0] >= min_g}
+        if len(cands) >= 2: break
+    best_mate = worst_mate = None
+    if cands:
+        best_mate = max(cands, key=lambda q: (cands[q][1] / cands[q][0], cands[q][0]))
+        g_, w_ = cands[best_mate]
+        cards.append(WrappedAward(key='p_partner_best', player_ids=[pid, best_mate],
+            stat_value=f"{round(w_ / g_ * 100)}%", stat_label='de victorias juntos',
+            stat_sub=f"ganaron {w_} de {g_} partidos juntos"))
+        rest = {q: v for q, v in cands.items() if q != best_mate}
+        if rest:
+            worst_mate = min(rest, key=lambda q: (rest[q][1] / rest[q][0], -rest[q][0]))
+            g_, w_ = rest[worst_mate]
+            if w_ / g_ < cands[best_mate][1] / cands[best_mate][0]:
+                cards.append(WrappedAward(key='p_partner_worst', player_ids=[pid, worst_mate],
+                    stat_value=f"{round(w_ / g_ * 100)}%", stat_label='de victorias juntos',
+                    stat_sub=f"ganaron {w_} de {g_} partidos juntos"))
+    if together:
+        mm = max(together, key=lambda q: (together[q][0], together[q][1]))
+        g_, w_ = together[mm]
+        cards.append(WrappedAward(key='p_partner_most', player_ids=[pid, mm], stat_value=str(g_),
+            stat_label='partidos en el mismo equipo', stat_sub=f"ganaron {w_} ({round(w_ / g_ * 100)}%)"))
+
+    # 10-12. Rivales (marcador cabeza a cabeza: victorias del jugador - del rival)
+    nemesis = None
+    nem = {q: v for q, v in versus.items() if v[2] >= 2}
+    if nem:
+        nemesis = max(nem, key=lambda q: (nem[q][2], nem[q][2] - nem[q][1], nem[q][0]))
+        g_, a_, b_ = nem[nemesis]
+        cards.append(WrappedAward(key='p_nemesis', player_ids=[pid, nemesis], stat_value=f"{a_}-{b_}",
+            stat_label='cara a cara', stat_sub=f"le perdió {b_} de {g_} cruces"))
+    cli = {q: v for q, v in versus.items() if v[1] >= 2 and v[1] > v[2] and q != nemesis}
+    if cli:
+        client = max(cli, key=lambda q: (cli[q][1], cli[q][1] - cli[q][2], cli[q][0]))
+        g_, a_, b_ = cli[client]
+        cards.append(WrappedAward(key='p_client', player_ids=[pid, client], stat_value=f"{a_}-{b_}",
+            stat_label='cara a cara', stat_sub=f"le ganó {a_} de {g_} cruces"))
+    if versus:
+        rm = max(versus, key=lambda q: (versus[q][0], versus[q][1]))
+        g_, a_, b_ = versus[rm]
+        if g_ >= 2:
+            cards.append(WrappedAward(key='p_rival_most', player_ids=[pid, rm], stat_value=f"{a_}-{b_}",
+                stat_label='cara a cara', stat_sub=f"{g_} veces en equipos contrarios"))
+
+    # 13. Sus premios en el Wrapped grupal
+    group = stats_wrapped(year=year, db=db, _=None).awards
+    won_lines, podium_lines = [], []
+    for a in group:
+        if a.key == 'paliza':
+            if pid in a.player_ids: won_lines.append([a.key, 'Ganó ese partido'])
+            continue
+        if a.key == 'nemesis':
+            if pid in a.player_ids or pid in a.player_ids_b: won_lines.append([a.key, 'Protagonista'])
+            continue
+        if pid in a.player_ids:
+            if a.key in ('best_duo', 'worst_duo'): val = 'Dupla'
+            elif a.key == 'clasico': val = 'Protagonista'
+            elif len(a.player_ids) > 1: val = 'Co-ganador'
+            else: val = '1°'
+            won_lines.append([a.key, val])
+        else:
+            e = next((e for e in a.podium if e.player_id == pid), None)
+            if e: podium_lines.append([a.key, f"{e.pos}°"])
+    if won_lines or podium_lines:
+        cards.append(WrappedAward(key='p_awards', player_ids=[pid], stat_value=str(len(won_lines)),
+            stat_label='premios del Wrapped',
+            stat_sub=f"y {len(podium_lines)} podio{'s' if len(podium_lines) != 1 else ''}" if podium_lines else '',
+            lines=won_lines + podium_lines))
+
+    # 14. Resumen final
+    summary = [['Partidos · winrate', f"{gp} · {round(w / gp * 100)}%"],
+               ['Mejor racha', f"{max_w} victorias seguidas"]]
+    if gd_list: summary.append(['Diferencia de gol', sign(sum(gd_list))])
+    if best_mate: summary.append(['Socio ideal', names.get(best_mate, '?')])
+    if nemesis: summary.append(['Bestia negra', names.get(nemesis, '?')])
+    if won_lines: summary.append(['Premios', str(len(won_lines))])
+    cards.append(WrappedAward(key='p_summary', player_ids=[pid], stat_value=sign(perf),
+        stat_label='puntos', stat_sub=pos_txt, lines=summary))
+
+    return PlayerWrappedOut(player_id=pid, year=year, cards=cards)
 
 @app.get("/players/{pid}/history", response_model=List[MatchHistoryEntry])
 def player_history(pid: int, db=Depends(get_session)):

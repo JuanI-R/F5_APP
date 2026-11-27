@@ -1699,6 +1699,9 @@ async function openPlayerModal(player, trendsMap) {
     modal.appendChild(badgeRow);
   }
 
+  modal.appendChild(h('button',{class:'btn btn-green btn-sm',style:'width:100%;margin-bottom:14px',
+    onClick:()=>openPlayerWrapped(player)}, `🎬 Ver su Wrapped ${new Date().getFullYear()}`));
+
   const spinner = h('div',{class:'spinner',style:'display:block;margin:20px auto'});
   modal.appendChild(spinner);
   overlay.appendChild(modal);
@@ -2251,7 +2254,25 @@ const WRAPPED_META = {
   farolito:          { kicker:'Ranking de partido', title:'Farolito rojo', desc:'El que más veces quedó último en el ranking del equipo que perdió.', stamp:'FAROLITO\nROJO' },
 };
 const WRAPPED_ORDER = ['leader','mvp','best_in_team','best_winrate','goal_diff_total','ironman','attendance_streak','most_improved','win_streak','lose_streak','best_duo','worst_duo','clasico','paliza','bottom_table','goals_against','farolito','nemesis'];
-const WRAPPED_DUO_KEYS = ['best_duo','worst_duo'];
+const WRAPPED_DUO_KEYS = ['best_duo','worst_duo','p_partner_best','p_partner_worst','p_partner_most'];
+// Wrapped por jugador: tarjetas individuales (GET /stats/wrapped/player/{id})
+const PLAYER_WRAPPED_META = {
+  p_season:        { kicker:'Su temporada', title:'Su año en cancha', desc:'Partidos, resultados y puntos de rendimiento acumulados en el año.', stamp:'SU\nAÑO' },
+  p_best_match:    { kicker:'Su temporada', title:'Su mejor partido', desc:'La victoria por más goles de diferencia que tuvo en el año.', stamp:'NOCHE\nSOÑADA' },
+  p_podiums:       { kicker:'Ranking de partido', title:'Sus podios', desc:'Cuántas veces quedó arriba (y abajo) en el ranking de su equipo.', stamp:'PODIOS' },
+  p_streaks:       { kicker:'Rachas', title:'Su mejor racha', desc:'Su racha más larga de victorias y de partidos seguidos sin faltar.', stamp:'EN\nRACHA' },
+  p_goal_diff:     { kicker:'Resultados', title:'Su diferencia de gol', desc:'La diferencia de goles de cada partido que ganó, menos la de cada partido que perdió.', stamp:'+/-' },
+  p_best_month:    { kicker:'Su temporada', title:'Su mejor mes', desc:'El mes en que más puntos de rendimiento sumó.', stamp:'MES\nTOP' },
+  p_partner_best:  { kicker:'Duplas', title:'Socio ideal', desc:'El compañero con el que más gana jugando en el mismo equipo.', stamp:'DUPLA\nDE ORO' },
+  p_partner_worst: { kicker:'Duplas', title:'La dupla que no funciona', desc:'El compañero con el que peor le va jugando en el mismo equipo.', stamp:'A\nSEPARAR' },
+  p_partner_most:  { kicker:'Duplas', title:'Compañero de siempre', desc:'Con quién más veces le tocó jugar en el mismo equipo.', stamp:'DE\nSIEMPRE' },
+  p_nemesis:       { kicker:'Rivales', title:'Bestia negra', desc:'El rival que más veces le ganó estando en el equipo contrario.', stamp:'SU\nCUCO' },
+  p_client:        { kicker:'Rivales', title:'Su cliente', desc:'El rival al que más veces le ganó.', stamp:'CLIENTE' },
+  p_rival_most:    { kicker:'Rivales', title:'Su rival de siempre', desc:'Contra quién más veces jugó en el equipo contrario.', stamp:'EL\nCLÁSICO' },
+  p_awards:        { kicker:'Wrapped del grupo', title:'Sus premios', desc:'Los premios del Wrapped del año que ganó o en los que subió al podio.', stamp:'VITRINA' },
+  p_summary:       { kicker:'Resumen', title:'Su Wrapped', desc:'Lo más importante de su temporada, en una sola tarjeta.', stamp:'F5\nWRAPPED' },
+};
+const WRAPPED_VERSUS_KEYS = ['clasico','p_nemesis','p_client','p_rival_most'];
 
 function wrName(pid) {
   const p = state.players.find(x => x.id === pid);
@@ -2270,7 +2291,7 @@ function wrAvatar(pid, size) {
 function wrBuildTicket(award, meta, seasonMap, idx, total) {
   const ticket = h('div',{class:'wr-ticket'});
   ticket.appendChild(h('div',{class:'wr-stamp'}, meta.stamp));
-  ticket.appendChild(h('div',{class:'wr-kicker'}, meta.kicker + ' · temporada'));
+  ticket.appendChild(h('div',{class:'wr-kicker'}, meta.focus ? meta.kicker : meta.kicker + ' · temporada'));
   ticket.appendChild(h('div',{class:'wr-award-name'}, meta.title));
   ticket.appendChild(h('div',{class:'wr-award-desc'}, meta.desc));
   ticket.appendChild(h('div',{class:'wr-divider'}));
@@ -2280,14 +2301,15 @@ function wrBuildTicket(award, meta, seasonMap, idx, total) {
     h('div',{}, h('div',{class:'wr-stat-unit'}, award.stat_label), h('div',{class:'wr-stat-sub'}, award.stat_sub))
   );
 
-  if (award.key === 'paliza') {
+  if (award.key === 'paliza' || award.key === 'p_best_match') {
     const row = h('div',{style:'display:flex;align-items:flex-start;margin-bottom:14px'});
     const mkTeam = (ids, label, won) => {
       const col = h('div',{class:'wr-team-col'});
       col.appendChild(h('div',{style:`font-size:.72rem;font-weight:700;color:${won?'#b6392c':'#1c1309'};opacity:${won?1:.45}`}, (won?'🏆 ':'') + label));
       ids.forEach((pid, i) => {
         const isMvp = won && i === 0 && award.flag;
-        col.appendChild(h('div',{style:`font-size:.84rem;font-weight:${won?'700':'500'};opacity:${won?1:.5}`},
+        const isFocus = meta.focus === pid;
+        col.appendChild(h('div',{style:`font-size:.84rem;font-weight:${won?'700':'500'};opacity:${won?1:.5}${isFocus?';text-decoration:underline;text-underline-offset:3px':''}`},
           wrName(pid) + (isMvp ? ' 👑' : '')));
       });
       return col;
@@ -2298,7 +2320,7 @@ function wrBuildTicket(award, meta, seasonMap, idx, total) {
     ticket.appendChild(row);
     if (award.flag) ticket.appendChild(h('div',{style:'font-size:.72rem;opacity:.55;margin-bottom:10px'}, '👑 MVP del partido'));
     ticket.appendChild(statBlock());
-  } else if (award.key === 'clasico') {
+  } else if (WRAPPED_VERSUS_KEYS.includes(award.key)) {
     // Marcador cabeza a cabeza: los dos protagonistas siempre visibles, gane quien gane.
     const [aw, bw] = award.stat_value.split('-');
     const mkSide = pid => h('div',{style:'display:flex;flex-direction:column;align-items:center;gap:6px;flex:1;min-width:0'},
@@ -2351,6 +2373,13 @@ function wrBuildTicket(award, meta, seasonMap, idx, total) {
         ));
       });
       ticket.appendChild(pod);
+    }
+    // Filas extra (Wrapped por jugador)
+    if (award.lines && award.lines.length) {
+      ticket.appendChild(h('div',{class:'wr-divider'}));
+      const mkLine = (l, v) => h('div',{class:'wr-recap-row'}, h('span',{},l), h('span',{class:'v'},v));
+      award.lines.forEach(([l, v]) => ticket.appendChild(
+        mkLine(award.key === 'p_awards' && WRAPPED_META[l] ? WRAPPED_META[l].title : l, v)));
     }
     // "Su temporada" solo tiene sentido con un único ganador
     const s = coWinners ? null : seasonMap[pid];
@@ -2463,7 +2492,8 @@ async function wrDownloadCard(award, meta, seasonMap, year, idx, total) {
   }
 }
 
-function renderWrappedStories(awards, seasonMap, year, container) {
+function renderWrappedStories(awards, seasonMap, year, container, metaFn) {
+  metaFn = metaFn || (a => WRAPPED_META[a.key]);
   container.innerHTML = '';
   let idx = 0, timer = null;
   const DURATION = 6000;
@@ -2497,13 +2527,16 @@ function renderWrappedStories(awards, seasonMap, year, container) {
     const existing = ticketSlot.querySelector('.wr-ticket');
     if (existing) existing.remove();
     const award = awards[idx];
-    const meta = WRAPPED_META[award.key];
+    const meta = metaFn(award);
     const ticket = wrBuildTicket(award, meta, seasonMap, idx, awards.length);
     ticketSlot.insertBefore(ticket, tapLeft);
     navBtn.textContent = idx === awards.length - 1 ? 'Volver al inicio ↺' : 'Siguiente →';
     dlBtn.onclick = () => wrDownloadCard(award, meta, seasonMap, year, idx, awards.length);
     if (timer) clearInterval(timer);
-    timer = setInterval(() => { if (idx < awards.length - 1) show(idx + 1); else clearInterval(timer); }, DURATION);
+    timer = setInterval(() => {
+      if (!phone.isConnected) { clearInterval(timer); return; }   // se cerró la vista
+      if (idx < awards.length - 1) show(idx + 1); else clearInterval(timer);
+    }, DURATION);
   }
 
   tapLeft.onclick = goPrev;
@@ -2511,6 +2544,53 @@ function renderWrappedStories(awards, seasonMap, year, container) {
   navBtn.onclick = goNext;
 
   show(0);
+}
+
+async function openPlayerWrapped(player) {
+  const year = new Date().getFullYear();
+  const overlay = h('div', { class:'overlay', style:'z-index:110', onClick: e => { if(e.target===overlay) overlay.remove(); } });
+  const modal = h('div', { class:'modal', style:'max-width:440px;padding:20px 16px' });
+  modal.appendChild(h('div', { class:'modal-title' },
+    h('span',{},`🎬 Wrapped ${year} · ${player.name}`),
+    h('button',{class:'close-btn',onClick:()=>overlay.remove()},'×')
+  ));
+  const body = h('div',{}, h('div',{class:'spinner',style:'display:block;margin:20px auto'}));
+  modal.appendChild(body);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  try {
+    const res = await api(`/stats/wrapped/player/${player.id}?year=${year}`);
+    body.innerHTML = '';
+    const cards = res.cards || [];
+    if (!cards.length) {
+      body.appendChild(h('div',{class:'empty'},h('p',{},`${player.name} no jugó partidos en ${year}.`)));
+      return;
+    }
+    // La kicker lleva el nombre del jugador, así cada tarjeta descargada se entiende sola
+    const metaFn = a => ({ ...PLAYER_WRAPPED_META[a.key], kicker: `${player.name} · ${PLAYER_WRAPPED_META[a.key].kicker}`, focus: player.id });
+    const fileTag = `${year}-${player.name}`;
+    const dlAll = h('button',{class:'btn btn-green btn-sm',style:'width:100%;margin-bottom:12px'},'⬇ Descargar todo');
+    dlAll.onclick = async () => {
+      const original = dlAll.textContent; dlAll.disabled = true;
+      try {
+        for (let i = 0; i < cards.length; i++) {
+          dlAll.textContent = `Descargando ${i+1}/${cards.length}...`;
+          await wrDownloadCard(cards[i], metaFn(cards[i]), {}, fileTag, i, cards.length);
+          await new Promise(r => setTimeout(r, 400));
+        }
+        toast(`${cards.length} tarjetas descargadas ✓`);
+      } catch(e) { toast('Error al descargar: ' + e.message, 'err'); }
+      finally { dlAll.disabled = false; dlAll.textContent = original; }
+    };
+    body.appendChild(dlAll);
+    const stories = h('div',{});
+    body.appendChild(stories);
+    // seasonMap vacío: en las tarjetas individuales no va el recuadro "Su temporada"
+    renderWrappedStories(cards, {}, fileTag, stories, metaFn);
+  } catch(e) {
+    body.innerHTML = '';
+    body.appendChild(h('div',{class:'empty'},h('p',{},'Error: '+e.message)));
+  }
 }
 
 function renderWrappedGrid(awards, seasonMap, year, container) {
